@@ -1,0 +1,212 @@
+import { useEffect, useRef } from 'react';
+
+import Editor, { type Monaco, type OnMount } from '@monaco-editor/react';
+import type { editor as MonacoEditor } from 'monaco-editor';
+
+import { defineMonacoThemes } from '../lib/themes';
+import type { CursorPosition, ScrollPosition } from '../types/editor';
+
+interface EditorPaneProps {
+  value: string;
+  modelPath: string | null;
+  monacoThemeId: string;
+  indentation: 2 | 4;
+  cursorToRestore: CursorPosition | null;
+  scrollToRestore: ScrollPosition | null;
+  onChange: (content: string) => void;
+  onValidation: (errorCount: number, message: string) => void;
+  onCursorChange: (cursor: CursorPosition) => void;
+  onScrollChange: (scroll: ScrollPosition) => void;
+  onViewStateRestored: () => void;
+}
+
+export function EditorPane({
+  value,
+  modelPath,
+  monacoThemeId,
+  indentation,
+  cursorToRestore,
+  scrollToRestore,
+  onChange,
+  onValidation,
+  onCursorChange,
+  onScrollChange,
+  onViewStateRestored,
+}: EditorPaneProps) {
+  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const cursorListenerRef = useRef<{ dispose: () => void } | null>(null);
+  const scrollListenerRef = useRef<{ dispose: () => void } | null>(null);
+  const restoredCursorKeyRef = useRef<string>('');
+  const restoreCursorFrameRef = useRef<number | null>(null);
+
+  const handleEditorMount: OnMount = (editorInstance) => {
+    editorRef.current = editorInstance;
+
+    cursorListenerRef.current?.dispose();
+    cursorListenerRef.current = editorInstance.onDidChangeCursorPosition((event) => {
+      onCursorChange({
+        line: event.position.lineNumber,
+        column: event.position.column,
+      });
+    });
+
+    scrollListenerRef.current?.dispose();
+    scrollListenerRef.current = editorInstance.onDidScrollChange((event) => {
+      onScrollChange({
+        top: event.scrollTop,
+        left: event.scrollLeft,
+      });
+    });
+
+    const position = editorInstance.getPosition();
+    if (position) {
+      onCursorChange({ line: position.lineNumber, column: position.column });
+    }
+  };
+
+  useEffect(() => {
+    const editorInstance = editorRef.current;
+    if (!editorInstance) {
+      return;
+    }
+
+    editorInstance.updateOptions({ tabSize: indentation });
+  }, [indentation]);
+
+  useEffect(() => {
+    return () => {
+      cursorListenerRef.current?.dispose();
+      scrollListenerRef.current?.dispose();
+      if (restoreCursorFrameRef.current !== null) {
+        cancelAnimationFrame(restoreCursorFrameRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if ((!cursorToRestore && !scrollToRestore) || !modelPath) {
+      return;
+    }
+
+    const cursorKey = cursorToRestore ? `${cursorToRestore.line}:${cursorToRestore.column}` : 'none';
+    const scrollKey = scrollToRestore ? `${scrollToRestore.top}:${scrollToRestore.left}` : 'none';
+    const restoreKey = `${modelPath}:${cursorKey}:${scrollKey}`;
+    if (restoredCursorKeyRef.current === restoreKey) {
+      return;
+    }
+
+    let attempts = 0;
+
+    const applyRestore = () => {
+      const editorInstance = editorRef.current;
+      const model = editorInstance?.getModel();
+
+      if (!editorInstance || !model) {
+        attempts += 1;
+        if (attempts <= 20) {
+          restoreCursorFrameRef.current = requestAnimationFrame(applyRestore);
+        }
+        return;
+      }
+
+      restoredCursorKeyRef.current = restoreKey;
+      if (scrollToRestore) {
+        editorInstance.setScrollTop(Math.max(0, scrollToRestore.top));
+        editorInstance.setScrollLeft(Math.max(0, scrollToRestore.left));
+      }
+
+      if (cursorToRestore) {
+        const lineNumber = clamp(cursorToRestore.line, 1, model.getLineCount());
+        const column = clamp(cursorToRestore.column, 1, model.getLineMaxColumn(lineNumber));
+        editorInstance.setPosition({ lineNumber, column });
+        editorInstance.setSelection({
+          startLineNumber: lineNumber,
+          startColumn: column,
+          endLineNumber: lineNumber,
+          endColumn: column,
+        });
+
+        // Preserve horizontal/vertical viewport exactly as recorded when scroll state exists.
+        if (!scrollToRestore) {
+          editorInstance.revealPositionInCenterIfOutsideViewport({ lineNumber, column });
+        } else {
+          editorInstance.setScrollTop(Math.max(0, scrollToRestore.top));
+          editorInstance.setScrollLeft(Math.max(0, scrollToRestore.left));
+        }
+      }
+
+      editorInstance.focus();
+      onViewStateRestored();
+    };
+
+    restoreCursorFrameRef.current = requestAnimationFrame(applyRestore);
+
+    return () => {
+      if (restoreCursorFrameRef.current !== null) {
+        cancelAnimationFrame(restoreCursorFrameRef.current);
+      }
+    };
+  }, [cursorToRestore, modelPath, onViewStateRestored, scrollToRestore, value]);
+
+  if (!modelPath) {
+    return (
+      <div className="flex h-full items-center justify-center bg-[var(--bg-editor)] px-6 text-center text-sm text-[var(--text-muted)]">
+        <div>
+          <p className="text-lg font-semibold text-[var(--text-main)]">请选择左侧 JSON 文件</p>
+          <p className="mt-1">支持实时校验、格式化与直接保存到本地。</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Editor
+      height="100%"
+      path={modelPath}
+      language="json"
+      value={value}
+      theme={monacoThemeId}
+      beforeMount={registerMonacoThemes}
+      onMount={handleEditorMount}
+      onChange={(content) => onChange(content ?? '')}
+      onValidate={(markers) => {
+        const errors = markers.filter((marker) => marker.severity === 8);
+
+        if (errors.length === 0) {
+          onValidation(0, 'JSON 格式正确');
+          return;
+        }
+
+        const firstError = errors[0];
+        const message = `第 ${firstError.startLineNumber} 行: ${firstError.message}`;
+        onValidation(errors.length, message);
+      }}
+      options={{
+        minimap: { enabled: false },
+        automaticLayout: true,
+        fontFamily: 'IBM Plex Mono',
+        fontSize: 14,
+        lineNumbersMinChars: 3,
+        renderValidationDecorations: 'editable',
+        scrollBeyondLastLine: false,
+        tabSize: indentation,
+      }}
+    />
+  );
+}
+
+function registerMonacoThemes(monaco: Monaco): void {
+  defineMonacoThemes(monaco);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (value < min) {
+    return min;
+  }
+
+  if (value > max) {
+    return max;
+  }
+
+  return value;
+}
