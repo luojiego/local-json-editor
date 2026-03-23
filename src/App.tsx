@@ -280,6 +280,7 @@ function App() {
         setCursorToRestore(null);
         setScrollToRestore(null);
         setSaveState('idle', '未找到 JSON');
+        setIsInitializing(false);
         return;
       }
 
@@ -302,6 +303,7 @@ function App() {
         setScrollToRestore(null);
       }
       setSaveState('idle', '目录已打开');
+      setIsInitializing(false);
     },
     [openFile, setDirectoryData, setSaveState],
   );
@@ -327,7 +329,6 @@ function App() {
       }
 
       await loadDirectoryFromHandle(directoryHandle, true);
-      setIsInitializing(false);
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         return;
@@ -353,7 +354,6 @@ function App() {
       if (granted) {
         await loadDirectoryFromHandle(lastHandle, true);
         setSaveState('idle', '✅ 已恢复上次目录');
-        setIsInitializing(false);
         return;
       }
 
@@ -640,6 +640,10 @@ function App() {
             </div>
           )}
           <div className="min-h-0 flex-1 bg-[var(--bg-editor)]">
+            {(() => {
+              console.log('[Debug] isInitializing:', isInitializing, 'tree:', !!tree, 'activeFile:', !!activeFile, 'showWelcomeScreen:', showWelcomeScreen);
+              return null;
+            })()}
             {isInitializing ? (
               <div className="flex h-full items-center justify-center px-6">
                 <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-toolbar)] px-6 py-5 text-sm text-[var(--text-muted)] shadow-[var(--shadow)]">
