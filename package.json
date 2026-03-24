@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "pnpm typecheck && vite build",
+    "desktop:dev": "pnpm tauri dev",
+    "desktop:build": "pnpm tauri build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "package:qa-win10": "pnpm build && node scripts/package-qa-win10.mjs"
@@ -22,6 +24,7 @@
     "zustand": "^5.0.3"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1",
     "@types/node": "^24.6.0",
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
