@@ -20,6 +20,7 @@ import {
   validateJsonContent,
 } from './lib/jsonTools';
 import {
+  clearLastDirectoryHandle,
   ensureDirectoryPermission,
   loadLastDirectoryHandle,
   queryDirectoryPermission,
@@ -33,6 +34,7 @@ import type { CursorPosition, JsonFileRecord, ScrollPosition } from './types/edi
 
 const TABLET_BREAKPOINT = 1200;
 const MOBILE_BREAKPOINT = 768;
+const LOCAL_STORAGE_APP_KEY_PREFIX = 'json-editor-';
 
 interface FileSystemCapability {
   supported: boolean;
@@ -394,6 +396,31 @@ function App() {
     await selectNewDirectory();
   }, [selectNewDirectory]);
 
+  const handleClearCache = useCallback(async () => {
+    const shouldClear = window.confirm('将清空本地缓存并刷新页面。\n是否继续？');
+    if (!shouldClear) {
+      return;
+    }
+
+    const secondaryConfirmMessage = isDirty
+      ? '此操作不可恢复，且会丢失当前未保存修改。\n是否确认清空缓存？'
+      : '此操作不可恢复。\n是否确认清空缓存？';
+    const confirmedIrreversible = window.confirm(secondaryConfirmMessage);
+    if (!confirmedIrreversible) {
+      return;
+    }
+
+    try {
+      clearAppLocalStorage();
+      await clearLastDirectoryHandle();
+      window.location.reload();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '清空缓存失败';
+      setSaveState('error', '清理失败');
+      window.alert(`清空缓存失败: ${message}`);
+    }
+  }, [isDirty, setSaveState]);
+
   useEffect(() => {
     if (restoredLastDirectoryRef.current) {
       return;
@@ -604,6 +631,7 @@ function App() {
         onOpenDirectory={() => void handleOpenDirectory()}
         onSave={() => void handleSaveFile()}
         onFormat={handleFormat}
+        onClearCache={() => void handleClearCache()}
         onIndentSizeChange={setIndentSize}
         onThemeChange={setThemeId}
         onToggleSidebar={toggleSidebarCollapsed}
@@ -731,3 +759,21 @@ function App() {
 }
 
 export default App;
+
+function clearAppLocalStorage(): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const keysToRemove: string[] = [];
+  for (let index = 0; index < window.localStorage.length; index += 1) {
+    const key = window.localStorage.key(index);
+    if (key?.startsWith(LOCAL_STORAGE_APP_KEY_PREFIX)) {
+      keysToRemove.push(key);
+    }
+  }
+
+  for (const key of keysToRemove) {
+    window.localStorage.removeItem(key);
+  }
+}

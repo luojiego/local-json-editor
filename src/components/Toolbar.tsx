@@ -1,4 +1,4 @@
-import { FolderOpen, IndentIncrease, Menu, Save } from 'lucide-react';
+import { FolderOpen, IndentIncrease, Menu, Save, Trash2 } from 'lucide-react';
 
 import { THEME_LIST } from '../lib/themes';
 
@@ -11,6 +11,7 @@ interface ToolbarProps {
   onOpenDirectory: () => void;
   onSave: () => void;
   onFormat: () => void;
+  onClearCache: () => void;
   onIndentSizeChange: (indentSize: 2 | 4) => void;
   onThemeChange: (themeId: string) => void;
   onToggleSidebar: () => void;
@@ -25,6 +26,7 @@ export function Toolbar({
   onOpenDirectory,
   onSave,
   onFormat,
+  onClearCache,
   onIndentSizeChange,
   onThemeChange,
   onToggleSidebar,
@@ -79,6 +81,16 @@ export function Toolbar({
             格式化
           </button>
         </div>
+
+        <button
+          type="button"
+          className="inline-flex h-9 items-center gap-2 rounded-md border border-[color-mix(in_srgb,var(--danger)_45%,var(--border))] px-3 text-xs font-semibold text-[var(--danger)] transition hover:bg-[color-mix(in_srgb,var(--danger)_12%,transparent)]"
+          onClick={onClearCache}
+          title="清理本地缓存并刷新页面"
+        >
+          <Trash2 size={14} />
+          清空缓存
+        </button>
 
         <label className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] px-2 py-1 text-xs text-[var(--text-muted)]">
           缩进
