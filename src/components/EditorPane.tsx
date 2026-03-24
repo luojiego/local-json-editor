@@ -137,7 +137,7 @@ export function EditorPane({
           endColumn: column,
         });
 
-        if (reason === 'format') {
+        if (reason === 'format' || reason === 'history-jump') {
           editorInstance.revealPositionInCenter({ lineNumber, column });
         } else if (!scroll) {
           editorInstance.revealPositionInCenterIfOutsideViewport({ lineNumber, column });

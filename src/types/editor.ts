@@ -39,7 +39,7 @@ export interface ValidationState {
   message: string;
 }
 
-export type ViewRestoreReason = 'file-switch' | 'format';
+export type ViewRestoreReason = 'file-switch' | 'format' | 'history-jump';
 
 export interface ViewRestoreRequest {
   requestId: number;

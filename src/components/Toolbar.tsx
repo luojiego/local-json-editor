@@ -1,15 +1,17 @@
-import { FolderOpen, IndentIncrease, Menu, Save, Trash2 } from 'lucide-react';
+import { FolderOpen, History, IndentIncrease, Menu, Save, Trash2 } from 'lucide-react';
 
 import { THEME_LIST } from '../lib/themes';
 
 interface ToolbarProps {
   fileName: string;
   canSave: boolean;
+  canOpenHistory: boolean;
   saveLabel: string;
   indentSize: 2 | 4;
   themeId: string;
   autoSaveOnFocus: boolean;
   onOpenDirectory: () => void;
+  onOpenHistory: () => void;
   onSave: () => void;
   onFormat: () => void;
   onClearCache: () => void;
@@ -22,11 +24,13 @@ interface ToolbarProps {
 export function Toolbar({
   fileName,
   canSave,
+  canOpenHistory,
   saveLabel,
   indentSize,
   themeId,
   autoSaveOnFocus,
   onOpenDirectory,
+  onOpenHistory,
   onSave,
   onFormat,
   onClearCache,
@@ -66,6 +70,17 @@ export function Toolbar({
         >
           <Save size={16} />
           保存 (Ctrl+S)
+        </button>
+
+        <button
+          type="button"
+          className="inline-flex h-9 items-center gap-2 rounded-md border border-[var(--border)] px-3 text-sm font-medium text-[var(--text-main)] transition hover:border-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+          onClick={onOpenHistory}
+          disabled={!canOpenHistory}
+          title="查看历史变更"
+        >
+          <History size={16} />
+          历史记录
         </button>
       </div>
 

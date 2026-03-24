@@ -1,7 +1,6 @@
-const DB_NAME = 'json-editor-storage';
-const STORE_NAME = 'file-system-handles';
+import { FILE_SYSTEM_HANDLES_STORE_NAME, openStorageDatabase } from './storageDb';
+
 const LAST_DIRECTORY_KEY = 'last-directory';
-const DB_VERSION = 1;
 
 export async function saveLastDirectoryHandle(
   directoryHandle: FileSystemDirectoryHandle,
@@ -10,13 +9,13 @@ export async function saveLastDirectoryHandle(
     return;
   }
 
-  const database = await openDatabase();
+  const database = await openStorageDatabase();
 
   await new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, 'readwrite');
+    const transaction = database.transaction(FILE_SYSTEM_HANDLES_STORE_NAME, 'readwrite');
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error ?? new Error('保存目录句柄失败'));
-    transaction.objectStore(STORE_NAME).put(directoryHandle, LAST_DIRECTORY_KEY);
+    transaction.objectStore(FILE_SYSTEM_HANDLES_STORE_NAME).put(directoryHandle, LAST_DIRECTORY_KEY);
   });
 
   database.close();
@@ -27,11 +26,11 @@ export async function loadLastDirectoryHandle(): Promise<FileSystemDirectoryHand
     return null;
   }
 
-  const database = await openDatabase();
+  const database = await openStorageDatabase();
 
   const value = await new Promise<FileSystemDirectoryHandle | null>((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, 'readonly');
-    const request = transaction.objectStore(STORE_NAME).get(LAST_DIRECTORY_KEY);
+    const transaction = database.transaction(FILE_SYSTEM_HANDLES_STORE_NAME, 'readonly');
+    const request = transaction.objectStore(FILE_SYSTEM_HANDLES_STORE_NAME).get(LAST_DIRECTORY_KEY);
 
     request.onsuccess = () => {
       const result = request.result;
@@ -54,13 +53,13 @@ export async function clearLastDirectoryHandle(): Promise<void> {
     return;
   }
 
-  const database = await openDatabase();
+  const database = await openStorageDatabase();
 
   await new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, 'readwrite');
+    const transaction = database.transaction(FILE_SYSTEM_HANDLES_STORE_NAME, 'readwrite');
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error ?? new Error('清理目录句柄失败'));
-    transaction.objectStore(STORE_NAME).delete(LAST_DIRECTORY_KEY);
+    transaction.objectStore(FILE_SYSTEM_HANDLES_STORE_NAME).delete(LAST_DIRECTORY_KEY);
   });
 
   database.close();
@@ -105,22 +104,6 @@ export async function queryDirectoryPermission(
   }
 
   return permissionAwareHandle.queryPermission({ mode });
-}
-
-async function openDatabase(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onupgradeneeded = () => {
-      const database = request.result;
-      if (!database.objectStoreNames.contains(STORE_NAME)) {
-        database.createObjectStore(STORE_NAME);
-      }
-    };
-
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('打开 IndexedDB 失败'));
-  });
 }
 
 function isDirectoryHandle(value: unknown): value is FileSystemDirectoryHandle {

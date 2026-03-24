@@ -3,8 +3,16 @@ import { Search } from 'lucide-react';
 
 import { EditorPane } from './components/EditorPane';
 import { FileTree } from './components/FileTree';
+import { HistoryDialog } from './components/HistoryDialog';
 import { StatusBar } from './components/StatusBar';
 import { Toolbar } from './components/Toolbar';
+import { calculateHistoryAnchor } from './lib/historyDiff';
+import {
+  appendHistoryEntry,
+  clearAllHistory,
+  MAX_HISTORY_ENTRIES_PER_DIRECTORY,
+  pruneDirectoryHistory,
+} from './lib/historyStorage';
 import {
   buildDirectoryTree,
   collectDirectoryIds,
@@ -40,6 +48,7 @@ import type {
   ScrollPosition,
   ViewRestoreRequest,
 } from './types/editor';
+import type { HistoryEntry } from './types/history';
 
 const TABLET_BREAKPOINT = 1200;
 const MOBILE_BREAKPOINT = 768;
@@ -102,6 +111,7 @@ function App() {
 
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [restoreRequest, setRestoreRequest] = useState<ViewRestoreRequest | null>(null);
+  const [isHistoryDialogOpen, setIsHistoryDialogOpen] = useState(false);
   const initialLastOpenStateRef = useRef(loadLastOpenState());
   const [isInitializing, setIsInitializing] = useState(true);
   const [hasRecentDirectory, setHasRecentDirectory] = useState(
@@ -133,6 +143,40 @@ function App() {
   }, []);
   const saveInFlightRef = useRef<Promise<SaveAttemptResult> | null>(null);
   const autoSaveInvalidNoticeRef = useRef<Map<string, string>>(new Map());
+  const persistSaveHistory = useCallback(
+    (params: {
+      directoryName: string;
+      fileId: string;
+      fileRelativePath: string;
+      trigger: SaveTrigger;
+      beforeContent: string;
+      afterContent: string;
+    }) => {
+      if (!params.directoryName || params.beforeContent === params.afterContent) {
+        return;
+      }
+
+      const anchor = calculateHistoryAnchor(params.beforeContent, params.afterContent);
+
+      void (async () => {
+        try {
+          await appendHistoryEntry({
+            directoryName: params.directoryName,
+            fileId: params.fileId,
+            fileRelativePath: params.fileRelativePath,
+            trigger: params.trigger,
+            beforeContent: params.beforeContent,
+            afterContent: params.afterContent,
+            anchor,
+          });
+          await pruneDirectoryHistory(params.directoryName, MAX_HISTORY_ENTRIES_PER_DIRECTORY);
+        } catch (error) {
+          console.error('写入历史记录失败:', error);
+        }
+      })();
+    },
+    [],
+  );
 
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const isTabletOrBelow = viewportWidth <= TABLET_BREAKPOINT;
@@ -469,6 +513,15 @@ function App() {
     await selectNewDirectory();
   }, [selectNewDirectory]);
 
+  const handleOpenHistoryDialog = useCallback(() => {
+    if (!directoryName) {
+      window.alert('请先打开目录，再查看历史记录。');
+      return;
+    }
+
+    setIsHistoryDialogOpen(true);
+  }, [directoryName]);
+
   const handleClearCache = useCallback(async () => {
     const shouldClear = window.confirm('将清空本地缓存并刷新页面。\n是否继续？');
     if (!shouldClear) {
@@ -485,6 +538,7 @@ function App() {
 
     try {
       clearAppLocalStorage();
+      await clearAllHistory();
       await clearLastDirectoryHandle();
       window.location.reload();
     } catch (error) {
@@ -628,6 +682,14 @@ function App() {
 
           await saveFileContent(activeFile.handle, nextPersistedContent);
           markSaved(nextPersistedContent);
+          persistSaveHistory({
+            directoryName,
+            fileId: activeFile.id,
+            fileRelativePath: activeFile.relativePath,
+            trigger,
+            beforeContent: persistedContent,
+            afterContent: nextPersistedContent,
+          });
           return 'saved';
         } catch (error) {
           const message = error instanceof Error ? error.message : '保存失败';
@@ -651,7 +713,17 @@ function App() {
         }
       }
     },
-    [activeFile, content, indentSize, isDirty, markSaved, persistedContent, setSaveState],
+    [
+      activeFile,
+      content,
+      directoryName,
+      indentSize,
+      isDirty,
+      markSaved,
+      persistSaveHistory,
+      persistedContent,
+      setSaveState,
+    ],
   );
 
   const handleEditorBlur = useCallback(() => {
@@ -689,6 +761,38 @@ function App() {
       performSave,
       setSidebarCollapsed,
     ],
+  );
+
+  const handleJumpToHistoryEntry = useCallback(
+    async (entry: HistoryEntry) => {
+      const targetFile = filesById.get(entry.fileId);
+      if (!targetFile) {
+        window.alert('无法定位历史修改：目标文件不存在。');
+        return;
+      }
+
+      const currentActiveFileId = useEditorStore.getState().activeFileId;
+      if (currentActiveFileId !== targetFile.id) {
+        await handleSelectFile(targetFile);
+      }
+
+      if (useEditorStore.getState().activeFileId !== targetFile.id) {
+        return;
+      }
+
+      enqueueRestoreRequest(
+        'history-jump',
+        {
+          line: Math.max(1, Math.floor(entry.anchor.line)),
+          column: Math.max(1, Math.floor(entry.anchor.column)),
+        },
+        null,
+      );
+
+      setIsHistoryDialogOpen(false);
+      setSaveState('idle', `已跳转到 ${targetFile.relativePath}`);
+    },
+    [enqueueRestoreRequest, filesById, handleSelectFile, setSaveState],
   );
 
   const handleSaveFile = useCallback(async () => {
@@ -823,11 +927,13 @@ function App() {
       <Toolbar
         fileName={activeFile?.relativePath ?? statusMessage}
         canSave={Boolean(activeFile)}
+        canOpenHistory={Boolean(directoryName)}
         saveLabel={saveLabel}
         indentSize={indentSize}
         themeId={themeId}
         autoSaveOnFocus={autoSaveOnFocus}
         onOpenDirectory={() => void handleOpenDirectory()}
+        onOpenHistory={handleOpenHistoryDialog}
         onSave={() => void handleSaveFile()}
         onFormat={handleFormat}
         onClearCache={() => void handleClearCache()}
@@ -954,6 +1060,15 @@ function App() {
           <StatusBar validation={validation} cursor={cursor} saveText={saveLabel} isDirty={isDirty} />
         </main>
       </div>
+
+      <HistoryDialog
+        open={isHistoryDialogOpen}
+        directoryName={directoryName}
+        monacoThemeId={activeTheme.monacoThemeId}
+        onClose={() => setIsHistoryDialogOpen(false)}
+        onJumpToChange={handleJumpToHistoryEntry}
+        onHistoryCleared={() => setSaveState('idle', '历史记录已清空')}
+      />
     </div>
   );
 }
