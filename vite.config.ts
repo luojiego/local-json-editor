@@ -1,7 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-const base = resolveBasePath(process.env.VITE_BASE);
+const tauriPlatform = process.env.TAURI_ENV_PLATFORM?.trim();
+const isTauriBuild = Boolean(tauriPlatform);
+const base = isTauriBuild ? './' : resolveBasePath(process.env.VITE_BASE);
 
 export default defineConfig({
   plugins: [react()],
