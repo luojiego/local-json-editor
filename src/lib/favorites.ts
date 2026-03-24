@@ -1,19 +1,21 @@
-const FAVORITE_FILES_STORAGE_KEY = 'json-editor-favorite-files';
+import { buildScopedStorageKey } from './workspaceScope';
+
 const SAVE_DEBOUNCE_MS = 300;
+const FAVORITE_FILES_STORAGE_KEY = 'favorite-files';
 
 let saveTimeoutId: number | null = null;
 
 export function loadFavoriteFileIds(
-  directoryName: string,
+  workspaceScope: string,
   availableFileIds?: Set<string>,
 ): string[] {
-  if (typeof window === 'undefined' || !directoryName) {
+  if (typeof window === 'undefined' || !workspaceScope) {
     return [];
   }
 
   try {
-    const state = readFavoriteState();
-    const favorites = sanitizeFavoriteIds(state[directoryName]);
+    const raw = window.localStorage.getItem(getFavoritesStorageKey(workspaceScope));
+    const favorites = sanitizeFavoriteIds(raw ? JSON.parse(raw) : []);
 
     if (!availableFileIds) {
       return favorites;
@@ -26,8 +28,8 @@ export function loadFavoriteFileIds(
   }
 }
 
-export function saveFavoriteFileIds(directoryName: string, favoriteFileIds: string[]): void {
-  if (typeof window === 'undefined' || !directoryName) {
+export function saveFavoriteFileIds(workspaceScope: string, favoriteFileIds: string[]): void {
+  if (typeof window === 'undefined' || !workspaceScope) {
     return;
   }
 
@@ -36,29 +38,13 @@ export function saveFavoriteFileIds(directoryName: string, favoriteFileIds: stri
   }
 
   saveTimeoutId = window.setTimeout(() => {
-    try {
-      const state = readFavoriteState();
-      const sanitized = sanitizeFavoriteIds(favoriteFileIds);
-
-      if (sanitized.length === 0) {
-        delete state[directoryName];
-      } else {
-        state[directoryName] = sanitized;
-      }
-
-      localStorage.setItem(FAVORITE_FILES_STORAGE_KEY, JSON.stringify(state));
-    } catch (error) {
-      console.error('保存收藏文件失败:', error);
-      if (error instanceof Error && error.name === 'QuotaExceededError') {
-        console.warn('localStorage 存储空间已满，无法保存收藏列表');
-      }
-    }
+    persistFavoriteFileIds(workspaceScope, favoriteFileIds);
     saveTimeoutId = null;
   }, SAVE_DEBOUNCE_MS);
 }
 
-export function saveFavoriteFileIdsImmediate(directoryName: string, favoriteFileIds: string[]): void {
-  if (typeof window === 'undefined' || !directoryName) {
+export function saveFavoriteFileIdsImmediate(workspaceScope: string, favoriteFileIds: string[]): void {
+  if (typeof window === 'undefined' || !workspaceScope) {
     return;
   }
 
@@ -67,17 +53,20 @@ export function saveFavoriteFileIdsImmediate(directoryName: string, favoriteFile
     saveTimeoutId = null;
   }
 
+  persistFavoriteFileIds(workspaceScope, favoriteFileIds);
+}
+
+function persistFavoriteFileIds(workspaceScope: string, favoriteFileIds: string[]): void {
   try {
-    const state = readFavoriteState();
     const sanitized = sanitizeFavoriteIds(favoriteFileIds);
+    const storageKey = getFavoritesStorageKey(workspaceScope);
 
     if (sanitized.length === 0) {
-      delete state[directoryName];
-    } else {
-      state[directoryName] = sanitized;
+      window.localStorage.removeItem(storageKey);
+      return;
     }
 
-    localStorage.setItem(FAVORITE_FILES_STORAGE_KEY, JSON.stringify(state));
+    window.localStorage.setItem(storageKey, JSON.stringify(sanitized));
   } catch (error) {
     console.error('保存收藏文件失败:', error);
     if (error instanceof Error && error.name === 'QuotaExceededError') {
@@ -86,22 +75,8 @@ export function saveFavoriteFileIdsImmediate(directoryName: string, favoriteFile
   }
 }
 
-function readFavoriteState(): Record<string, unknown> {
-  const raw = localStorage.getItem(FAVORITE_FILES_STORAGE_KEY);
-  if (!raw) {
-    return {};
-  }
-
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return {};
-    }
-
-    return parsed as Record<string, unknown>;
-  } catch {
-    return {};
-  }
+function getFavoritesStorageKey(workspaceScope: string): string {
+  return buildScopedStorageKey(FAVORITE_FILES_STORAGE_KEY, workspaceScope);
 }
 
 function sanitizeFavoriteIds(value: unknown): string[] {

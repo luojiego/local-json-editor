@@ -1,7 +1,8 @@
-const DB_NAME = 'json-editor-storage';
-const DB_VERSION = 2;
+import { getStoragePrefix } from './workspaceScope';
 
-export const FILE_SYSTEM_HANDLES_STORE_NAME = 'file-system-handles';
+const DB_NAME = `${getStoragePrefix()}-storage`;
+const DB_VERSION = 1;
+
 export const HISTORY_STORE_NAME = 'history-records';
 
 export async function openStorageDatabase(): Promise<IDBDatabase> {
@@ -11,16 +12,12 @@ export async function openStorageDatabase(): Promise<IDBDatabase> {
     request.onupgradeneeded = () => {
       const database = request.result;
 
-      if (!database.objectStoreNames.contains(FILE_SYSTEM_HANDLES_STORE_NAME)) {
-        database.createObjectStore(FILE_SYSTEM_HANDLES_STORE_NAME);
-      }
-
       if (!database.objectStoreNames.contains(HISTORY_STORE_NAME)) {
         const historyStore = database.createObjectStore(HISTORY_STORE_NAME, {
           keyPath: 'id',
         });
-        historyStore.createIndex('by-directory', 'directoryName', { unique: false });
-        historyStore.createIndex('by-directory-saved-at', ['directoryName', 'savedAt'], {
+        historyStore.createIndex('by-workspace', 'workspaceScope', { unique: false });
+        historyStore.createIndex('by-workspace-saved-at', ['workspaceScope', 'savedAt'], {
           unique: false,
         });
       }

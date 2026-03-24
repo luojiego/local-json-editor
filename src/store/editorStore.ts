@@ -2,6 +2,7 @@ import { create } from 'zustand';
 
 import { loadFavoriteFileIds, saveFavoriteFileIds } from '../lib/favorites';
 import { pruneFileEditorStates, type FileEditorState } from '../lib/lastOpenState';
+import { getStoragePrefix } from '../lib/workspaceScope';
 import type {
   CursorPosition,
   DirectoryTreeNode,
@@ -15,7 +16,8 @@ type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 type JsonIndentSize = 2 | 4;
 
 interface DirectoryPayload {
-  directoryHandle: FileSystemDirectoryHandle;
+  workspacePath: string;
+  workspaceScope: string;
   directoryName: string;
   files: JsonFileRecord[];
   tree: DirectoryTreeNode;
@@ -24,7 +26,8 @@ interface DirectoryPayload {
 }
 
 interface EditorStore {
-  directoryHandle: FileSystemDirectoryHandle | null;
+  workspacePath: string;
+  workspaceScope: string;
   directoryName: string;
   files: JsonFileRecord[];
   tree: DirectoryTreeNode | null;
@@ -67,15 +70,17 @@ interface EditorStore {
   markSaved: (persistedContent: string) => void;
 }
 
-const THEME_STORAGE_KEY = 'json-editor-theme';
-const AUTO_SAVE_ON_FOCUS_STORAGE_KEY = 'json-editor-auto-save-on-focus';
+const STORAGE_PREFIX = getStoragePrefix();
+const THEME_STORAGE_KEY = `${STORAGE_PREFIX}-theme`;
+const AUTO_SAVE_ON_FOCUS_STORAGE_KEY = `${STORAGE_PREFIX}-auto-save-on-focus`;
 const DEFAULT_THEME_ID = readThemeFromStorage();
 const DEFAULT_AUTO_SAVE_ON_FOCUS = readAutoSaveOnFocusFromStorage();
 const DEFAULT_CURSOR: CursorPosition = { line: 1, column: 1 };
 const DEFAULT_SCROLL: ScrollPosition = { top: 0, left: 0 };
 
 export const useEditorStore = create<EditorStore>((set) => ({
-  directoryHandle: null,
+  workspacePath: '',
+  workspaceScope: '',
   directoryName: '',
   files: [],
   tree: null,
@@ -100,7 +105,8 @@ export const useEditorStore = create<EditorStore>((set) => ({
   saveStatus: 'idle',
   statusMessage: '未保存',
   setDirectoryData: ({
-    directoryHandle,
+    workspacePath,
+    workspaceScope,
     directoryName,
     files,
     tree,
@@ -112,15 +118,16 @@ export const useEditorStore = create<EditorStore>((set) => ({
     );
     const availableFileIds = new Set(files.map((file) => file.id));
     const nextFileViewStates = pruneFileEditorStates(fileViewStates, availableFileIds);
-    const persistedFavoriteFileIds = loadFavoriteFileIds(directoryName);
+    const persistedFavoriteFileIds = loadFavoriteFileIds(workspaceScope);
     const favoriteFileIds = persistedFavoriteFileIds.filter((fileId) => availableFileIds.has(fileId));
 
     if (persistedFavoriteFileIds.length !== favoriteFileIds.length) {
-      saveFavoriteFileIds(directoryName, favoriteFileIds);
+      saveFavoriteFileIds(workspaceScope, favoriteFileIds);
     }
 
     set({
-      directoryHandle,
+      workspacePath,
+      workspaceScope,
       directoryName,
       files,
       tree,
@@ -185,7 +192,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
   },
   toggleFavoriteFile: (fileId) => {
     set((state) => {
-      if (!state.directoryName) {
+      if (!state.workspaceScope) {
         console.warn('无法切换收藏状态：未打开目录');
         return {};
       }
@@ -201,7 +208,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
         : [...state.favoriteFileIds, fileId];
 
       try {
-        saveFavoriteFileIds(state.directoryName, nextFavoriteFileIds);
+        saveFavoriteFileIds(state.workspaceScope, nextFavoriteFileIds);
         return { favoriteFileIds: nextFavoriteFileIds };
       } catch (error) {
         console.error('保存收藏状态失败:', error);
@@ -211,7 +218,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
   },
   moveFavoriteFile: (draggingFileId, targetFileId) => {
     set((state) => {
-      if (!state.directoryName) {
+      if (!state.workspaceScope) {
         console.warn('无法移动收藏文件：未打开目录');
         return {};
       }
@@ -238,7 +245,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       nextFavoriteFileIds.splice(toIndex, 0, draggingFileId);
 
       try {
-        saveFavoriteFileIds(state.directoryName, nextFavoriteFileIds);
+        saveFavoriteFileIds(state.workspaceScope, nextFavoriteFileIds);
         return { favoriteFileIds: nextFavoriteFileIds };
       } catch (error) {
         console.error('保存收藏顺序失败:', error);
@@ -277,14 +284,14 @@ export const useEditorStore = create<EditorStore>((set) => ({
     }));
   },
   setThemeId: (themeId) => {
-    localStorage.setItem(THEME_STORAGE_KEY, themeId);
+    window.localStorage.setItem(THEME_STORAGE_KEY, themeId);
     set({ themeId });
   },
   setIndentSize: (indentSize) => {
     set({ indentSize });
   },
   setAutoSaveOnFocus: (autoSaveOnFocus) => {
-    localStorage.setItem(AUTO_SAVE_ON_FOCUS_STORAGE_KEY, autoSaveOnFocus ? '1' : '0');
+    window.localStorage.setItem(AUTO_SAVE_ON_FOCUS_STORAGE_KEY, autoSaveOnFocus ? '1' : '0');
     set({ autoSaveOnFocus });
   },
   toggleSidebarCollapsed: () => {
@@ -310,7 +317,7 @@ function readThemeFromStorage(): string {
     return fallback;
   }
 
-  return localStorage.getItem(THEME_STORAGE_KEY) ?? fallback;
+  return window.localStorage.getItem(THEME_STORAGE_KEY) ?? fallback;
 }
 
 function readAutoSaveOnFocusFromStorage(): boolean {

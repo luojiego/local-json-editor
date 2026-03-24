@@ -9,10 +9,10 @@
     "desktop:dev": "pnpm tauri dev",
     "desktop:build": "pnpm tauri build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "package:qa-win10": "pnpm build && node scripts/package-qa-win10.mjs"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
     "@monaco-editor/react": "^4.7.0",
     "fuse.js": "^7.1.0",
     "jsonc-parser": "^3.3.1",

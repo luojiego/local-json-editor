@@ -7,7 +7,8 @@ export interface HistoryAnchor {
 
 export interface HistoryEntry {
   id: string;
-  directoryName: string;
+  workspaceScope: string;
+  workspaceName: string;
   fileId: string;
   fileRelativePath: string;
   trigger: HistoryTrigger;

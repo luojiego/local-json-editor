@@ -1,53 +1,6 @@
 import type { DirectoryTreeNode, JsonFileRecord, TreeNode } from '../types/editor';
 
-const JSON_EXTENSION_PATTERN = /\.jsonc?$/i;
-
 export const DEFAULT_MAX_SCAN_DEPTH = 5;
-
-export async function scanJsonFiles(
-  directoryHandle: FileSystemDirectoryHandle,
-  maxDepth = DEFAULT_MAX_SCAN_DEPTH,
-): Promise<JsonFileRecord[]> {
-  const files: JsonFileRecord[] = [];
-  await walkDirectory(directoryHandle, '', 0, maxDepth, files);
-
-  return files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
-}
-
-async function walkDirectory(
-  directoryHandle: FileSystemDirectoryHandle,
-  currentPath: string,
-  depth: number,
-  maxDepth: number,
-  files: JsonFileRecord[],
-): Promise<void> {
-  const iterableHandle = directoryHandle as FileSystemDirectoryHandle & {
-    values: () => AsyncIterable<FileSystemHandle>;
-  };
-
-  for await (const entry of iterableHandle.values()) {
-    const nextPath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
-
-    if (entry.kind === 'file' && JSON_EXTENSION_PATTERN.test(entry.name)) {
-      const fileEntry = entry as FileSystemFileHandle;
-      const directoryPath = currentPath;
-      files.push({
-        id: nextPath,
-        name: fileEntry.name,
-        relativePath: nextPath,
-        directoryPath,
-        depth,
-        handle: fileEntry,
-      });
-      continue;
-    }
-
-    if (entry.kind === 'directory' && depth < maxDepth) {
-      const directoryEntry = entry as FileSystemDirectoryHandle;
-      await walkDirectory(directoryEntry, nextPath, depth + 1, maxDepth, files);
-    }
-  }
-}
 
 export function buildDirectoryTree(
   rootName: string,
@@ -136,20 +89,6 @@ function walkTree(node: DirectoryTreeNode, output: string[]): void {
       walkTree(child, output);
     }
   }
-}
-
-export async function readFileContent(fileHandle: FileSystemFileHandle): Promise<string> {
-  const file = await fileHandle.getFile();
-  return file.text();
-}
-
-export async function saveFileContent(
-  fileHandle: FileSystemFileHandle,
-  content: string,
-): Promise<void> {
-  const writable = await fileHandle.createWritable();
-  await writable.write(content);
-  await writable.close();
 }
 
 export function createFileMap(files: JsonFileRecord[]): Map<string, JsonFileRecord> {

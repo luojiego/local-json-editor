@@ -10,16 +10,14 @@ import { calculateHistoryAnchor } from './lib/historyDiff';
 import {
   appendHistoryEntry,
   clearAllHistory,
-  MAX_HISTORY_ENTRIES_PER_DIRECTORY,
-  pruneDirectoryHistory,
+  MAX_HISTORY_ENTRIES_PER_WORKSPACE,
+  pruneWorkspaceHistory,
 } from './lib/historyStorage';
 import {
   buildDirectoryTree,
   collectDirectoryIds,
   createFileMap,
-  readFileContent,
-  saveFileContent,
-  scanJsonFiles,
+  DEFAULT_MAX_SCAN_DEPTH,
 } from './lib/fileSystem';
 import {
   formatJsonWithCursorOffset,
@@ -28,19 +26,15 @@ import {
   validateJsonContent,
 } from './lib/jsonTools';
 import {
-  clearLastDirectoryHandle,
-  ensureDirectoryPermission,
-  loadLastDirectoryHandle,
-  queryDirectoryPermission,
-  saveLastDirectoryHandle,
-} from './lib/lastDirectory';
-import {
   loadLastOpenState,
   pruneFileEditorStates,
   saveLastOpenState,
 } from './lib/lastOpenState';
+import { workspaceFsGateway } from './lib/tauriWorkspaceFsGateway';
 import { applyThemeVariables, getThemeById } from './lib/themes';
 import { searchFiles } from './lib/search';
+import { clearLastWorkspacePath, loadLastWorkspacePath, saveLastWorkspacePath } from './lib/workspaceSession';
+import { createWorkspaceScope, extractWorkspaceName, getStoragePrefix } from './lib/workspaceScope';
 import { useEditorStore } from './store/editorStore';
 import type {
   CursorPosition,
@@ -52,22 +46,17 @@ import type { HistoryEntry } from './types/history';
 
 const TABLET_BREAKPOINT = 1200;
 const MOBILE_BREAKPOINT = 768;
-const LOCAL_STORAGE_APP_KEY_PREFIX = 'json-editor-';
+const LOCAL_STORAGE_APP_KEY_PREFIX = `${getStoragePrefix()}-`;
+const DEBUG_VIEW_STATE_KEY = `${getStoragePrefix()}-debug-view-state`;
 const DEFAULT_CURSOR: CursorPosition = { line: 1, column: 1 };
 const DEFAULT_SCROLL: ScrollPosition = { top: 0, left: 0 };
-
-interface FileSystemCapability {
-  supported: boolean;
-  hasDirectoryPicker: boolean;
-  isSecureContext: boolean;
-  isTopLevelContext: boolean;
-}
 
 type SaveTrigger = 'manual' | 'auto';
 type SaveAttemptResult = 'saved' | 'skipped' | 'cancelled' | 'failed';
 
 function App() {
   const {
+    workspaceScope,
     files,
     tree,
     activeFileId,
@@ -112,18 +101,16 @@ function App() {
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [restoreRequest, setRestoreRequest] = useState<ViewRestoreRequest | null>(null);
   const [isHistoryDialogOpen, setIsHistoryDialogOpen] = useState(false);
-  const initialLastOpenStateRef = useRef(loadLastOpenState());
   const [isInitializing, setIsInitializing] = useState(true);
-  const [hasRecentDirectory, setHasRecentDirectory] = useState(
-    () => Boolean(initialLastOpenStateRef.current?.directoryName),
-  );
+  const initialWorkspacePath = useMemo(() => loadLastWorkspacePath(), []);
+  const [hasRecentDirectory, setHasRecentDirectory] = useState(() => Boolean(initialWorkspacePath));
   const [recentDirectoryName, setRecentDirectoryName] = useState(
-    () => initialLastOpenStateRef.current?.directoryName ?? '',
+    () => (initialWorkspacePath ? extractWorkspaceName(initialWorkspacePath) : ''),
   );
   const restoredLastDirectoryRef = useRef(false);
   const restoreSessionTokenRef = useRef(0);
-  const loadDirectoryFromHandleRef = useRef<
-    (directoryHandle: FileSystemDirectoryHandle, shouldPersistHandle: boolean, sessionToken?: number) => Promise<void>
+  const loadWorkspaceFromPathRef = useRef<
+    (nextWorkspacePath: string, shouldPersistPath: boolean, sessionToken?: number) => Promise<void>
   >(async () => {});
   const restoreRequestIdRef = useRef(0);
   const enqueueRestoreRequest = useCallback(
@@ -145,14 +132,15 @@ function App() {
   const autoSaveInvalidNoticeRef = useRef<Map<string, string>>(new Map());
   const persistSaveHistory = useCallback(
     (params: {
-      directoryName: string;
+      workspaceScope: string;
+      workspaceName: string;
       fileId: string;
       fileRelativePath: string;
       trigger: SaveTrigger;
       beforeContent: string;
       afterContent: string;
     }) => {
-      if (!params.directoryName || params.beforeContent === params.afterContent) {
+      if (!params.workspaceScope || params.beforeContent === params.afterContent) {
         return;
       }
 
@@ -161,7 +149,8 @@ function App() {
       void (async () => {
         try {
           await appendHistoryEntry({
-            directoryName: params.directoryName,
+            workspaceScope: params.workspaceScope,
+            workspaceName: params.workspaceName,
             fileId: params.fileId,
             fileRelativePath: params.fileRelativePath,
             trigger: params.trigger,
@@ -169,7 +158,7 @@ function App() {
             afterContent: params.afterContent,
             anchor,
           });
-          await pruneDirectoryHistory(params.directoryName, MAX_HISTORY_ENTRIES_PER_DIRECTORY);
+          await pruneWorkspaceHistory(params.workspaceScope, MAX_HISTORY_ENTRIES_PER_WORKSPACE);
         } catch (error) {
           console.error('写入历史记录失败:', error);
         }
@@ -180,25 +169,6 @@ function App() {
 
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const isTabletOrBelow = viewportWidth <= TABLET_BREAKPOINT;
-
-  const fileSystemCapability = useMemo<FileSystemCapability>(() => {
-    const hasDirectoryPicker = typeof window.showDirectoryPicker === 'function';
-    const isSecure = window.isSecureContext;
-
-    let isTopLevelContext = true;
-    try {
-      isTopLevelContext = window.self === window.top;
-    } catch {
-      isTopLevelContext = false;
-    }
-
-    return {
-      supported: hasDirectoryPicker && isSecure && isTopLevelContext,
-      hasDirectoryPicker,
-      isSecureContext: isSecure,
-      isTopLevelContext,
-    };
-  }, []);
 
   const activeTheme = useMemo(() => getThemeById(themeId), [themeId]);
   const filesById = useMemo(() => createFileMap(files), [files]);
@@ -250,26 +220,6 @@ function App() {
     });
   }, [activeFileId, activeFileViewState?.formatted, isDirty, saveLabel, saveStatus]);
 
-  const fileSystemIssueMessage = useMemo(() => {
-    if (fileSystemCapability.supported) {
-      return '';
-    }
-
-    if (!fileSystemCapability.isSecureContext) {
-      return '当前页面不是安全上下文，请使用 https 或 http://localhost 访问（不要使用局域网 IP）。';
-    }
-
-    if (!fileSystemCapability.isTopLevelContext) {
-      return '当前页面运行在嵌入式环境/iframe 中，请在独立浏览器标签页中打开。';
-    }
-
-    if (!fileSystemCapability.hasDirectoryPicker) {
-      return '当前运行环境未暴露 showDirectoryPicker（常见于内嵌 WebView）。';
-    }
-
-    return '当前环境无法使用 File System Access API。';
-  }, [fileSystemCapability]);
-
   useEffect(() => {
     applyThemeVariables(activeTheme);
   }, [activeTheme]);
@@ -309,13 +259,12 @@ function App() {
   }, [isDirty, saveStatus, setSaveState]);
 
   useEffect(() => {
-    if (!directoryName) {
+    if (!workspaceScope) {
       return;
     }
 
     const timer = window.setTimeout(() => {
-      saveLastOpenState({
-        directoryName,
+      saveLastOpenState(workspaceScope, {
         activeFileId: activeFileId ?? '',
         files: fileViewStates,
       });
@@ -324,7 +273,7 @@ function App() {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [activeFileId, directoryName, fileViewStates]);
+  }, [activeFileId, fileViewStates, workspaceScope]);
 
   const openFile = useCallback(
     async (file: JsonFileRecord, checkDirty: boolean) => {
@@ -336,7 +285,7 @@ function App() {
       }
 
       try {
-        const fileContent = await readFileContent(file.handle);
+        const fileContent = await workspaceFsGateway.readFile(file.rootPath, file.relativePath);
 
         const restoredState = useEditorStore.getState().fileViewStates[file.id] ?? null;
         logViewStateDebug('open-file-restored-state', {
@@ -381,25 +330,30 @@ function App() {
     [activeFileId, enqueueRestoreRequest, indentSize, isDirty, setActiveFileContent, setSaveState, setValidation],
   );
 
-  const loadDirectoryFromHandle = useCallback(
-    async (directoryHandle: FileSystemDirectoryHandle, shouldPersistHandle: boolean, sessionToken?: number) => {
+  const loadWorkspaceFromPath = useCallback(
+    async (nextWorkspacePath: string, shouldPersistPath: boolean, sessionToken?: number) => {
+      const trimmedPath = nextWorkspacePath.trim();
+      if (!trimmedPath) {
+        return;
+      }
+
       const isSessionValid = () => sessionToken === undefined || sessionToken === restoreSessionTokenRef.current;
 
       setSaveState('saving', '扫描中');
 
-      const scannedFiles = await scanJsonFiles(directoryHandle);
+      const scannedFiles = await workspaceFsGateway.scanJsonFiles(trimmedPath, DEFAULT_MAX_SCAN_DEPTH);
       if (!isSessionValid()) {
         return;
       }
 
-      const directoryTree = buildDirectoryTree(directoryHandle.name, scannedFiles);
+      const nextWorkspaceScope = createWorkspaceScope(trimmedPath);
+      const workspaceName = extractWorkspaceName(trimmedPath);
+      const directoryTree = buildDirectoryTree(workspaceName, scannedFiles);
       const expandedIds = collectDirectoryIds(directoryTree);
       const availableFileIds = new Set(scannedFiles.map((file) => file.id));
-      const lastOpenState = loadLastOpenState();
-      const fromSameDirectory =
-        lastOpenState && lastOpenState.directoryName === directoryHandle.name ? lastOpenState : null;
-      const restoredFileViewStates = fromSameDirectory
-        ? pruneFileEditorStates(fromSameDirectory.files, availableFileIds)
+      const lastOpenState = loadLastOpenState(nextWorkspaceScope);
+      const restoredFileViewStates = lastOpenState
+        ? pruneFileEditorStates(lastOpenState.files, availableFileIds)
         : {};
 
       if (!isSessionValid()) {
@@ -407,19 +361,20 @@ function App() {
       }
 
       setDirectoryData({
-        directoryHandle,
-        directoryName: directoryHandle.name,
+        workspacePath: trimmedPath,
+        workspaceScope: nextWorkspaceScope,
+        directoryName: workspaceName,
         files: scannedFiles,
         tree: directoryTree,
         expandedDirectoryIds: expandedIds,
         fileViewStates: restoredFileViewStates,
       });
 
-      if (shouldPersistHandle) {
-        await saveLastDirectoryHandle(directoryHandle);
+      if (shouldPersistPath) {
+        saveLastWorkspacePath(trimmedPath);
       }
       setHasRecentDirectory(true);
-      setRecentDirectoryName(directoryHandle.name);
+      setRecentDirectoryName(workspaceName);
 
       if (scannedFiles.length === 0) {
         setRestoreRequest(null);
@@ -428,10 +383,9 @@ function App() {
         return;
       }
 
-      const preferredFile =
-        fromSameDirectory
-          ? scannedFiles.find((file) => file.id === fromSameDirectory.activeFileId) ?? null
-          : null;
+      const preferredFile = lastOpenState
+        ? scannedFiles.find((file) => file.id === lastOpenState.activeFileId) ?? null
+        : null;
       const fileToOpen = preferredFile ?? scannedFiles[0];
 
       if (!isSessionValid()) {
@@ -451,76 +405,64 @@ function App() {
   );
 
   useEffect(() => {
-    loadDirectoryFromHandleRef.current = loadDirectoryFromHandle;
-  }, [loadDirectoryFromHandle]);
+    loadWorkspaceFromPathRef.current = loadWorkspaceFromPath;
+  }, [loadWorkspaceFromPath]);
 
   const selectNewDirectory = useCallback(async () => {
-    if (!fileSystemCapability.supported) {
-      window.alert(fileSystemIssueMessage || '当前环境不支持 File System Access API。');
-      return;
-    }
-
     try {
-      const directoryHandle = await window.showDirectoryPicker?.({
-        id: 'json-editor-workspace',
-        mode: 'readwrite',
-      });
-
-      if (!directoryHandle) {
+      const selectedWorkspacePath = await workspaceFsGateway.selectWorkspace();
+      if (!selectedWorkspacePath) {
         return;
       }
 
-      await loadDirectoryFromHandle(directoryHandle, true);
+      await loadWorkspaceFromPath(selectedWorkspacePath, true);
     } catch (error) {
-      if (error instanceof DOMException && error.name === 'AbortError') {
-        return;
-      }
-
       const message = error instanceof Error ? error.message : '打开目录失败';
       setSaveState('error', '打开失败');
       setIsInitializing(false);
       window.alert(`打开目录失败: ${message}`);
     }
-  }, [fileSystemCapability.supported, fileSystemIssueMessage, loadDirectoryFromHandle, setSaveState]);
+  }, [loadWorkspaceFromPath, setSaveState]);
 
   const restoreWithPrompt = useCallback(async () => {
     try {
-      const lastHandle = await loadLastDirectoryHandle();
+      const lastWorkspace = loadLastWorkspacePath().trim();
 
-      if (!lastHandle) {
+      if (!lastWorkspace) {
         await selectNewDirectory();
         return;
       }
 
-      const granted = await ensureDirectoryPermission(lastHandle, 'readwrite');
-      if (granted) {
-        await loadDirectoryFromHandle(lastHandle, true);
-        setSaveState('idle', '✅ 已恢复上次目录');
+      const exists = await workspaceFsGateway.existsWorkspace(lastWorkspace);
+      if (!exists) {
+        clearLastWorkspacePath();
+        window.alert('上次打开的目录已不可用，请选择新目录。');
+        await selectNewDirectory();
         return;
       }
 
-      window.alert('权限被拒绝，请选择新目录');
-      await selectNewDirectory();
+      await loadWorkspaceFromPath(lastWorkspace, true);
+      setSaveState('idle', '✅ 已恢复上次目录');
     } catch (error) {
       const message = error instanceof Error ? error.message : '恢复目录失败';
       setSaveState('error', '恢复失败');
       setIsInitializing(false);
       window.alert(`恢复目录失败: ${message}`);
     }
-  }, [loadDirectoryFromHandle, selectNewDirectory, setSaveState]);
+  }, [loadWorkspaceFromPath, selectNewDirectory, setSaveState]);
 
   const handleOpenDirectory = useCallback(async () => {
     await selectNewDirectory();
   }, [selectNewDirectory]);
 
   const handleOpenHistoryDialog = useCallback(() => {
-    if (!directoryName) {
+    if (!workspaceScope) {
       window.alert('请先打开目录，再查看历史记录。');
       return;
     }
 
     setIsHistoryDialogOpen(true);
-  }, [directoryName]);
+  }, [workspaceScope]);
 
   const handleClearCache = useCallback(async () => {
     const shouldClear = window.confirm('将清空本地缓存并刷新页面。\n是否继续？');
@@ -539,7 +481,7 @@ function App() {
     try {
       clearAppLocalStorage();
       await clearAllHistory();
-      await clearLastDirectoryHandle();
+      clearLastWorkspacePath();
       window.location.reload();
     } catch (error) {
       const message = error instanceof Error ? error.message : '清空缓存失败';
@@ -557,36 +499,31 @@ function App() {
     let cancelled = false;
 
     const initializeApp = async () => {
-      if (!fileSystemCapability.supported) {
+      const lastWorkspace = loadLastWorkspacePath().trim();
+      if (!lastWorkspace) {
         setIsInitializing(false);
         return;
       }
 
+      setHasRecentDirectory(true);
+      setRecentDirectoryName(extractWorkspaceName(lastWorkspace));
+
       try {
-        const lastHandle = await loadLastDirectoryHandle();
-        if (!lastHandle || cancelled) {
-          return;
-        }
-
-        setHasRecentDirectory(true);
-        setRecentDirectoryName(lastHandle.name);
-
-        const permission = await queryDirectoryPermission(lastHandle, 'read');
+        const exists = await workspaceFsGateway.existsWorkspace(lastWorkspace);
         if (cancelled) {
           return;
         }
 
-        if (permission === 'denied' || permission === 'prompt') {
-          if (!cancelled) {
-            setSaveState('idle', '检测到上次目录，可点击"继续使用此目录"恢复访问');
-          }
+        if (!exists) {
+          clearLastWorkspacePath();
+          setSaveState('idle', '检测到上次目录已失效，请重新选择目录');
           return;
         }
 
         const currentSessionToken = ++restoreSessionTokenRef.current;
         const AUTO_RESTORE_TIMEOUT_MS = 5000;
 
-        const restorePromise = loadDirectoryFromHandleRef.current(lastHandle, true, currentSessionToken);
+        const restorePromise = loadWorkspaceFromPathRef.current(lastWorkspace, true, currentSessionToken);
         const timeoutPromise = new Promise<'timeout'>((resolve) => {
           setTimeout(() => resolve('timeout'), AUTO_RESTORE_TIMEOUT_MS);
         });
@@ -601,7 +538,7 @@ function App() {
         }
 
         if (result === 'timeout') {
-          restoreSessionTokenRef.current++;
+          restoreSessionTokenRef.current += 1;
           setSaveState('idle', '检测到上次目录，可点击"继续使用此目录"恢复访问');
         } else {
           setSaveState('idle', '已自动恢复上次目录');
@@ -611,7 +548,6 @@ function App() {
           setSaveState('idle', '检测到上次目录，可点击"继续使用此目录"恢复访问');
         }
       } finally {
-        // 无论何种情况（含 React Strict Mode 下 cancelled=true）都必须退出初始化
         setIsInitializing(false);
       }
     };
@@ -621,7 +557,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [fileSystemCapability.supported, setSaveState]);
+  }, [setSaveState]);
 
   const performSave = useCallback(
     async (trigger: SaveTrigger): Promise<SaveAttemptResult> => {
@@ -680,10 +616,15 @@ function App() {
             }
           }
 
-          await saveFileContent(activeFile.handle, nextPersistedContent);
+          await workspaceFsGateway.writeFile(
+            activeFile.rootPath,
+            activeFile.relativePath,
+            nextPersistedContent,
+          );
           markSaved(nextPersistedContent);
           persistSaveHistory({
-            directoryName,
+            workspaceScope,
+            workspaceName: directoryName,
             fileId: activeFile.id,
             fileRelativePath: activeFile.relativePath,
             trigger,
@@ -723,6 +664,7 @@ function App() {
       persistSaveHistory,
       persistedContent,
       setSaveState,
+      workspaceScope,
     ],
   );
 
@@ -906,8 +848,7 @@ function App() {
     };
   }, [handleFormat, handleSaveFile]);
 
-  const showWelcomeScreen =
-    !isInitializing && !tree && fileSystemCapability.supported;
+  const showWelcomeScreen = !isInitializing && !tree;
 
   if (isMobile) {
     return (
@@ -915,7 +856,7 @@ function App() {
         <div className="max-w-md space-y-3 rounded-xl border border-[var(--border)] bg-[var(--bg-toolbar)] p-8 shadow-[var(--shadow)]">
           <h1 className="text-2xl font-semibold">JSON 配置编辑器</h1>
           <p className="text-sm text-[var(--text-muted)]">
-            当前版本暂不支持移动端，请使用桌面浏览器（Chrome / Edge）访问。
+            当前版本暂不支持移动端，请在桌面端使用。
           </p>
         </div>
       </div>
@@ -927,7 +868,7 @@ function App() {
       <Toolbar
         fileName={activeFile?.relativePath ?? statusMessage}
         canSave={Boolean(activeFile)}
-        canOpenHistory={Boolean(directoryName)}
+        canOpenHistory={Boolean(workspaceScope)}
         saveLabel={saveLabel}
         indentSize={indentSize}
         themeId={themeId}
@@ -996,11 +937,6 @@ function App() {
         )}
 
         <main className="relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden">
-          {!fileSystemCapability.supported && (
-            <div className="border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] px-4 py-2 text-sm text-[var(--danger)]">
-              {fileSystemIssueMessage}
-            </div>
-          )}
           <div className="min-h-0 flex-1 bg-[var(--bg-editor)]">
             {isInitializing ? (
               <div className="flex h-full items-center justify-center px-6">
@@ -1027,7 +963,7 @@ function App() {
                         className="mt-3 inline-flex h-9 items-center rounded-md border border-[var(--border)] px-3 text-sm font-medium text-[var(--text-main)] transition hover:border-[var(--accent)] hover:text-[var(--accent-strong)]"
                         onClick={() => void restoreWithPrompt()}
                       >
-                        继续使用此目录（重新授权）
+                        继续使用此目录
                       </button>
                     </div>
                   )}
@@ -1063,6 +999,8 @@ function App() {
 
       <HistoryDialog
         open={isHistoryDialogOpen}
+        workspaceScope={workspaceScope}
+        workspaceName={directoryName}
         directoryName={directoryName}
         monacoThemeId={activeTheme.monacoThemeId}
         onClose={() => setIsHistoryDialogOpen(false)}
@@ -1159,7 +1097,7 @@ function logViewStateDebug(label: string, payload?: unknown): void {
     return;
   }
 
-  if (window.localStorage.getItem('json-editor-debug-view-state') !== '1') {
+  if (window.localStorage.getItem(DEBUG_VIEW_STATE_KEY) !== '1') {
     return;
   }
 

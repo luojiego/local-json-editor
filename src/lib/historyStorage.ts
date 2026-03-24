@@ -1,11 +1,12 @@
 import { HISTORY_STORE_NAME, openStorageDatabase } from './storageDb';
 import type { HistoryAnchor, HistoryEntry, HistoryTrigger } from '../types/history';
 
-export const MAX_HISTORY_ENTRIES_PER_DIRECTORY = 200;
+export const MAX_HISTORY_ENTRIES_PER_WORKSPACE = 200;
 
 interface AppendHistoryEntryInput {
   id?: string;
-  directoryName: string;
+  workspaceScope: string;
+  workspaceName: string;
   fileId: string;
   fileRelativePath: string;
   trigger: HistoryTrigger;
@@ -16,7 +17,7 @@ interface AppendHistoryEntryInput {
 }
 
 export async function appendHistoryEntry(input: AppendHistoryEntryInput): Promise<void> {
-  if (!('indexedDB' in window)) {
+  if (!('indexedDB' in window) || !input.workspaceScope) {
     return;
   }
 
@@ -34,8 +35,8 @@ export async function appendHistoryEntry(input: AppendHistoryEntryInput): Promis
   database.close();
 }
 
-export async function listDirectoryHistory(directoryName: string): Promise<HistoryEntry[]> {
-  if (!('indexedDB' in window) || !directoryName) {
+export async function listWorkspaceHistory(workspaceScope: string): Promise<HistoryEntry[]> {
+  if (!('indexedDB' in window) || !workspaceScope) {
     return [];
   }
 
@@ -45,8 +46,8 @@ export async function listDirectoryHistory(directoryName: string): Promise<Histo
     const transaction = database.transaction(HISTORY_STORE_NAME, 'readonly');
     transaction.onerror = () => reject(transaction.error ?? new Error('读取历史记录失败'));
 
-    const index = transaction.objectStore(HISTORY_STORE_NAME).index('by-directory');
-    const request = index.getAll(IDBKeyRange.only(directoryName));
+    const index = transaction.objectStore(HISTORY_STORE_NAME).index('by-workspace');
+    const request = index.getAll(IDBKeyRange.only(workspaceScope));
     request.onsuccess = () => {
       const items: HistoryEntry[] = [];
       for (const raw of request.result as unknown[]) {
@@ -70,8 +71,8 @@ export async function listDirectoryHistory(directoryName: string): Promise<Histo
   });
 }
 
-export async function clearDirectoryHistory(directoryName: string): Promise<void> {
-  if (!('indexedDB' in window) || !directoryName) {
+export async function clearWorkspaceHistory(workspaceScope: string): Promise<void> {
+  if (!('indexedDB' in window) || !workspaceScope) {
     return;
   }
 
@@ -82,8 +83,8 @@ export async function clearDirectoryHistory(directoryName: string): Promise<void
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error ?? new Error('清空历史记录失败'));
 
-    const index = transaction.objectStore(HISTORY_STORE_NAME).index('by-directory');
-    const request = index.openCursor(IDBKeyRange.only(directoryName));
+    const index = transaction.objectStore(HISTORY_STORE_NAME).index('by-workspace');
+    const request = index.openCursor(IDBKeyRange.only(workspaceScope));
 
     request.onsuccess = () => {
       const cursor = request.result;
@@ -118,15 +119,15 @@ export async function clearAllHistory(): Promise<void> {
   database.close();
 }
 
-export async function pruneDirectoryHistory(
-  directoryName: string,
-  maxEntries = MAX_HISTORY_ENTRIES_PER_DIRECTORY,
+export async function pruneWorkspaceHistory(
+  workspaceScope: string,
+  maxEntries = MAX_HISTORY_ENTRIES_PER_WORKSPACE,
 ): Promise<number> {
-  if (!directoryName || maxEntries <= 0) {
+  if (!workspaceScope || maxEntries <= 0) {
     return 0;
   }
 
-  const entries = await listDirectoryHistory(directoryName);
+  const entries = await listWorkspaceHistory(workspaceScope);
   if (entries.length <= maxEntries) {
     return 0;
   }
@@ -159,7 +160,8 @@ function createHistoryEntry(input: AppendHistoryEntryInput): HistoryEntry {
 
   return {
     id: input.id?.trim() || generateHistoryEntryId(savedAt),
-    directoryName: input.directoryName,
+    workspaceScope: input.workspaceScope,
+    workspaceName: input.workspaceName,
     fileId: input.fileId,
     fileRelativePath: input.fileRelativePath,
     trigger: input.trigger,
@@ -181,7 +183,8 @@ function parseHistoryEntry(value: unknown): HistoryEntry | null {
   const candidate = value as Partial<HistoryEntry>;
   if (
     typeof candidate.id !== 'string' ||
-    typeof candidate.directoryName !== 'string' ||
+    typeof candidate.workspaceScope !== 'string' ||
+    typeof candidate.workspaceName !== 'string' ||
     typeof candidate.fileId !== 'string' ||
     typeof candidate.fileRelativePath !== 'string' ||
     (candidate.trigger !== 'manual' && candidate.trigger !== 'auto') ||
@@ -200,7 +203,8 @@ function parseHistoryEntry(value: unknown): HistoryEntry | null {
 
   return {
     id: candidate.id,
-    directoryName: candidate.directoryName,
+    workspaceScope: candidate.workspaceScope,
+    workspaceName: candidate.workspaceName,
     fileId: candidate.fileId,
     fileRelativePath: candidate.fileRelativePath,
     trigger: candidate.trigger,

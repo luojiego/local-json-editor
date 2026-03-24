@@ -1,6 +1,7 @@
 import type { CursorPosition, ScrollPosition } from '../types/editor';
+import { buildScopedStorageKey } from './workspaceScope';
 
-const LAST_OPEN_STATE_KEY = 'json-editor-last-open-state';
+const LAST_OPEN_STATE_STORAGE_KEY = 'last-open-state';
 
 export interface FileEditorState {
   cursor: CursorPosition;
@@ -10,25 +11,29 @@ export interface FileEditorState {
 }
 
 export interface LastOpenState {
-  directoryName: string;
   activeFileId: string;
   files: Record<string, FileEditorState>;
 }
 
-export function saveLastOpenState(state: LastOpenState): void {
-  if (typeof window === 'undefined') {
+export function saveLastOpenState(workspaceScope: string, state: LastOpenState): void {
+  if (typeof window === 'undefined' || !workspaceScope) {
     return;
   }
 
-  localStorage.setItem(LAST_OPEN_STATE_KEY, JSON.stringify(state));
+  window.localStorage.setItem(
+    buildScopedStorageKey(LAST_OPEN_STATE_STORAGE_KEY, workspaceScope),
+    JSON.stringify(state),
+  );
 }
 
-export function loadLastOpenState(): LastOpenState | null {
-  if (typeof window === 'undefined') {
+export function loadLastOpenState(workspaceScope: string): LastOpenState | null {
+  if (typeof window === 'undefined' || !workspaceScope) {
     return null;
   }
 
-  const raw = localStorage.getItem(LAST_OPEN_STATE_KEY);
+  const raw = window.localStorage.getItem(
+    buildScopedStorageKey(LAST_OPEN_STATE_STORAGE_KEY, workspaceScope),
+  );
   if (!raw) {
     return null;
   }
@@ -41,7 +46,6 @@ export function loadLastOpenState(): LastOpenState | null {
     }
 
     if (
-      typeof parsed.directoryName !== 'string' ||
       typeof parsed.activeFileId !== 'string' ||
       !parsed.files ||
       typeof parsed.files !== 'object' ||
@@ -59,7 +63,6 @@ export function loadLastOpenState(): LastOpenState | null {
     }
 
     return {
-      directoryName: parsed.directoryName,
       activeFileId: parsed.activeFileId,
       files,
     };

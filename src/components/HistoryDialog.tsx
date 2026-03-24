@@ -5,12 +5,14 @@ import type { editor as MonacoEditor } from 'monaco-editor';
 import { ArrowUpRight, Eraser, FileJson, RefreshCcw, X } from 'lucide-react';
 
 import { createHistoryChangeSummary } from '../lib/historyDiff';
-import { clearDirectoryHistory, listDirectoryHistory } from '../lib/historyStorage';
+import { clearWorkspaceHistory, listWorkspaceHistory } from '../lib/historyStorage';
 import { defineMonacoThemes } from '../lib/themes';
 import type { HistoryEntry } from '../types/history';
 
 interface HistoryDialogProps {
   open: boolean;
+  workspaceScope: string;
+  workspaceName: string;
   directoryName: string;
   monacoThemeId: string;
   onClose: () => void;
@@ -20,6 +22,8 @@ interface HistoryDialogProps {
 
 export function HistoryDialog({
   open,
+  workspaceScope,
+  workspaceName,
   directoryName,
   monacoThemeId,
   onClose,
@@ -40,7 +44,7 @@ export function HistoryDialog({
   );
 
   const loadHistory = useCallback(async () => {
-    if (!directoryName) {
+    if (!workspaceScope) {
       setEntries([]);
       setActiveEntryId(null);
       setErrorMessage('请先打开目录，再查看历史记录。');
@@ -49,7 +53,7 @@ export function HistoryDialog({
 
     setIsLoading(true);
     try {
-      const nextEntries = await listDirectoryHistory(directoryName);
+      const nextEntries = await listWorkspaceHistory(workspaceScope);
       setEntries(nextEntries);
       setActiveEntryId((current) => {
         if (current && nextEntries.some((entry) => entry.id === current)) {
@@ -65,7 +69,7 @@ export function HistoryDialog({
     } finally {
       setIsLoading(false);
     }
-  }, [directoryName]);
+  }, [workspaceScope]);
 
   useEffect(() => {
     if (!open) {
@@ -106,7 +110,7 @@ export function HistoryDialog({
   }, []);
 
   const handleClearHistory = useCallback(async () => {
-    if (!directoryName || entries.length === 0) {
+    if (!workspaceScope || entries.length === 0) {
       return;
     }
 
@@ -116,7 +120,7 @@ export function HistoryDialog({
     }
 
     try {
-      await clearDirectoryHistory(directoryName);
+      await clearWorkspaceHistory(workspaceScope);
       setEntries([]);
       setActiveEntryId(null);
       setErrorMessage('');
@@ -126,7 +130,7 @@ export function HistoryDialog({
       const message = error instanceof Error ? error.message : '清空历史记录失败';
       window.alert(`清空历史记录失败: ${message}`);
     }
-  }, [directoryName, entries.length, onHistoryCleared]);
+  }, [entries.length, onHistoryCleared, workspaceScope]);
 
   const handleDiffMount: DiffOnMount = useCallback((editorInstance) => {
     diffEditorRef.current = editorInstance;
@@ -162,7 +166,7 @@ export function HistoryDialog({
           <div className="min-w-0">
             <div className="text-lg font-semibold text-[var(--text-main)]">历史记录</div>
             <div className="mt-1 truncate text-sm text-[var(--text-muted)]">
-              {directoryName ? `目录：${directoryName}` : '未打开目录'}
+              {workspaceScope ? `目录：${workspaceName || directoryName}` : '未打开目录'}
             </div>
           </div>
 
@@ -179,7 +183,7 @@ export function HistoryDialog({
               type="button"
               className="inline-flex h-9 items-center gap-2 rounded-md border border-[color-mix(in_srgb,var(--danger)_50%,var(--border))] px-3 text-xs font-semibold text-[var(--danger)] transition hover:bg-[color-mix(in_srgb,var(--danger)_12%,transparent)] disabled:cursor-not-allowed disabled:opacity-50"
               onClick={() => void handleClearHistory()}
-              disabled={!directoryName || entries.length === 0}
+              disabled={!workspaceScope || entries.length === 0}
             >
               <Eraser size={14} />
               清空历史变更

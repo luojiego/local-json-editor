@@ -1,20 +1,23 @@
-JSON Online Editor - Win10 Zero-Install Package
+JSON Config Editor - Desktop (Tauri) QA Guide
 
-How to run:
-1. Extract this package to any folder.
-2. Double-click: start-editor.bat
-3. Browser will open automatically at: http://127.0.0.1:4173
+Scope:
+- This project is now delivered as a desktop app.
+- The old local HTTP server launch flow is removed.
 
-How to stop:
-- Close the terminal window opened by start-editor.bat
-- or press Ctrl + C in that terminal
+Run in development:
+1. Install dependencies:
+   pnpm install
+2. Start desktop dev mode:
+   pnpm desktop:dev
 
-Important:
-- Do NOT open dist/index.html directly (file://)
-- Always use http://127.0.0.1:4173
-- Recommended browsers: Edge or Chrome
+Build for Windows:
+1. Install dependencies:
+   pnpm install
+2. Build desktop app:
+   pnpm desktop:build
+3. Find artifacts in:
+   src-tauri/target/release/bundle/
 
-Troubleshooting:
-- If browser does not open automatically, manually open:
-  http://127.0.0.1:4173
-- If port 4173 is in use, close the process occupying it and run again.
+Notes:
+- Do not open `dist/index.html` directly.
+- File access is handled through Tauri native commands.

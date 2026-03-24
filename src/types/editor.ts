@@ -1,10 +1,10 @@
 export interface JsonFileRecord {
   id: string;
   name: string;
+  rootPath: string;
   relativePath: string;
   directoryPath: string;
   depth: number;
-  handle: FileSystemFileHandle;
 }
 
 export interface DirectoryTreeNode {
