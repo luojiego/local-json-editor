@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 
-import { loadFavoriteFileIds, saveFavoriteFileIds } from '../lib/favorites';
+import {
+  loadFavoriteFileIds,
+  saveFavoriteFileIds,
+  saveFavoriteFileIdsImmediate,
+} from '../lib/favorites';
 import { pruneFileEditorStates, type FileEditorState } from '../lib/lastOpenState';
 import { getStoragePrefix } from '../lib/workspaceScope';
 import type {
@@ -14,6 +18,7 @@ import type {
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 type JsonIndentSize = 2 | 4;
+type FavoriteMovePosition = 'before' | 'after';
 
 interface DirectoryPayload {
   workspacePath: string;
@@ -55,7 +60,11 @@ interface EditorStore {
   setSearchQuery: (query: string) => void;
   toggleDirectoryExpanded: (directoryId: string) => void;
   toggleFavoriteFile: (fileId: string) => void;
-  moveFavoriteFile: (draggingFileId: string, targetFileId: string) => void;
+  moveFavoriteFile: (
+    draggingFileId: string,
+    targetFileId: string,
+    position?: FavoriteMovePosition,
+  ) => void;
   setValidation: (validation: ValidationState) => void;
   setCursor: (cursor: CursorPosition) => void;
   setScroll: (scroll: ScrollPosition) => void;
@@ -216,7 +225,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       }
     });
   },
-  moveFavoriteFile: (draggingFileId, targetFileId) => {
+  moveFavoriteFile: (draggingFileId, targetFileId, position = 'before') => {
     set((state) => {
       if (!state.workspaceScope) {
         console.warn('无法移动收藏文件：未打开目录');
@@ -242,10 +251,16 @@ export const useEditorStore = create<EditorStore>((set) => ({
 
       const nextFavoriteFileIds = [...state.favoriteFileIds];
       nextFavoriteFileIds.splice(fromIndex, 1);
-      nextFavoriteFileIds.splice(toIndex, 0, draggingFileId);
+
+      const insertionIndex = resolveInsertionIndex({
+        fromIndex,
+        toIndex,
+        position,
+      });
+      nextFavoriteFileIds.splice(insertionIndex, 0, draggingFileId);
 
       try {
-        saveFavoriteFileIds(state.workspaceScope, nextFavoriteFileIds);
+        saveFavoriteFileIdsImmediate(state.workspaceScope, nextFavoriteFileIds);
         return { favoriteFileIds: nextFavoriteFileIds };
       } catch (error) {
         console.error('保存收藏顺序失败:', error);
@@ -361,4 +376,18 @@ function patchActiveFileViewState(
         typeof patch.formatted === 'boolean' ? patch.formatted : currentState.formatted,
     },
   };
+}
+
+function resolveInsertionIndex(params: {
+  fromIndex: number;
+  toIndex: number;
+  position: FavoriteMovePosition;
+}): number {
+  const { fromIndex, toIndex, position } = params;
+
+  if (position === 'after') {
+    return fromIndex < toIndex ? toIndex : toIndex + 1;
+  }
+
+  return fromIndex < toIndex ? toIndex - 1 : toIndex;
 }

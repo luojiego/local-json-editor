@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent } from 'react';
 import {
   ChevronDown,
@@ -23,6 +23,7 @@ import {
 import type { DirectoryTreeNode, JsonFileRecord, TreeNode } from '../types/editor';
 
 const DRAG_DATA_TYPE = 'application/x-favorite-file-id';
+type FavoriteDropPosition = 'before' | 'after';
 
 interface FileTreeProps {
   tree: DirectoryTreeNode | null;
@@ -33,7 +34,11 @@ interface FileTreeProps {
   favoriteFileIds: string[];
   onToggleDirectory: (directoryId: string) => void;
   onToggleFavoriteFile: (fileId: string) => void;
-  onMoveFavoriteFile: (draggingFileId: string, targetFileId: string) => void;
+  onMoveFavoriteFile: (
+    draggingFileId: string,
+    targetFileId: string,
+    position?: FavoriteDropPosition,
+  ) => void;
   onSelectFile: (file: JsonFileRecord) => void;
   visibleFileIds: Set<string>;
 }
@@ -51,8 +56,12 @@ export function FileTree({
   onSelectFile,
   visibleFileIds,
 }: FileTreeProps) {
+  const draggingFavoriteFileIdRef = useRef<string | null>(null);
   const [draggingFavoriteFileId, setDraggingFavoriteFileId] = useState<string | null>(null);
-  const [dropTargetFileId, setDropTargetFileId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{
+    fileId: string;
+    position: FavoriteDropPosition;
+  } | null>(null);
 
   if (!tree) {
     return (
@@ -77,6 +86,7 @@ export function FileTree({
     .filter((file): file is JsonFileRecord => Boolean(file));
 
   const handleFavoriteDragStart = (event: DragEvent<HTMLDivElement>, fileId: string) => {
+    draggingFavoriteFileIdRef.current = fileId;
     setDraggingFavoriteFileId(fileId);
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData(DRAG_DATA_TYPE, fileId);
@@ -87,43 +97,58 @@ export function FileTree({
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
     
-    if (draggingFavoriteFileId && draggingFavoriteFileId !== targetFileId) {
-      setDropTargetFileId(targetFileId);
+    const draggingFileId = draggingFavoriteFileIdRef.current;
+    if (draggingFileId && draggingFileId !== targetFileId) {
+      const position = resolveDropPosition(event);
+      setDropTarget({ fileId: targetFileId, position });
     }
   };
 
-  const handleFavoriteDragLeave = () => {
-    setDropTargetFileId(null);
+  const handleFavoriteDragLeave = (event: DragEvent<HTMLDivElement>) => {
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) {
+      return;
+    }
+    setDropTarget(null);
   };
 
   const handleFavoriteDrop = (event: DragEvent<HTMLDivElement>, targetFileId: string) => {
     event.preventDefault();
-    setDropTargetFileId(null);
+    const dropPosition =
+      dropTarget?.fileId === targetFileId ? dropTarget.position : resolveDropPosition(event);
+    setDropTarget(null);
 
-    const draggingFileId = event.dataTransfer.getData(DRAG_DATA_TYPE) || draggingFavoriteFileId;
+    const draggingFileId =
+      event.dataTransfer.getData(DRAG_DATA_TYPE) ||
+      event.dataTransfer.getData('text/plain') ||
+      draggingFavoriteFileIdRef.current;
     
     if (!draggingFileId || draggingFileId === targetFileId) {
+      draggingFavoriteFileIdRef.current = null;
       setDraggingFavoriteFileId(null);
       return;
     }
 
     if (!favoriteFileIds.includes(draggingFileId)) {
+      draggingFavoriteFileIdRef.current = null;
       setDraggingFavoriteFileId(null);
       return;
     }
 
     try {
-      onMoveFavoriteFile(draggingFileId, targetFileId);
+      onMoveFavoriteFile(draggingFileId, targetFileId, dropPosition);
     } catch (error) {
       console.error('移动收藏文件失败:', error);
     } finally {
+      draggingFavoriteFileIdRef.current = null;
       setDraggingFavoriteFileId(null);
     }
   };
 
   const handleFavoriteDragEnd = () => {
+    draggingFavoriteFileIdRef.current = null;
     setDraggingFavoriteFileId(null);
-    setDropTargetFileId(null);
+    setDropTarget(null);
   };
 
   const handleFavoriteKeyDown = (event: KeyboardEvent<HTMLDivElement>, fileId: string) => {
@@ -135,14 +160,11 @@ export function FileTree({
     if (isCtrlOrCmd && event.key === 'ArrowUp' && currentIndex > 0) {
       event.preventDefault();
       const targetFileId = favoriteFileIds[currentIndex - 1];
-      onMoveFavoriteFile(fileId, targetFileId);
+      onMoveFavoriteFile(fileId, targetFileId, 'before');
     } else if (isCtrlOrCmd && event.key === 'ArrowDown' && currentIndex < favoriteFileIds.length - 1) {
       event.preventDefault();
       const targetFileId = favoriteFileIds[currentIndex + 1];
-      const targetIndex = currentIndex + 1;
-      if (targetIndex < favoriteFileIds.length - 1) {
-        onMoveFavoriteFile(fileId, favoriteFileIds[targetIndex + 1]);
-      }
+      onMoveFavoriteFile(fileId, targetFileId, 'after');
     }
   };
 
@@ -162,67 +184,72 @@ export function FileTree({
             {favoriteFiles.map((file) => {
               const isActive = activeFileId === file.id;
               const isDragging = draggingFavoriteFileId === file.id;
-              const isDropTarget = dropTargetFileId === file.id;
+              const isDropTarget = dropTarget?.fileId === file.id;
+              const isDropTargetBefore = isDropTarget && dropTarget?.position === 'before';
+              const isDropTargetAfter = isDropTarget && dropTarget?.position === 'after';
 
               return (
-                <div key={file.id} className="relative">
-                  {isDropTarget && (
-                    <div className="absolute -top-0.5 left-0 right-0 h-0.5 bg-[var(--accent)] rounded-full" />
+                <div
+                  key={file.id}
+                  draggable
+                  tabIndex={0}
+                  role="button"
+                  aria-label={`收藏文件: ${file.name}，按 Ctrl+上下箭头移动位置`}
+                  className={[
+                    'relative',
+                    FAVORITE_ITEM_BASE_STYLES,
+                    isActive ? FAVORITE_ITEM_ACTIVE_STYLES : FAVORITE_ITEM_HOVER_STYLES,
+                    isDragging ? 'opacity-40' : '',
+                    isDropTarget ? 'ring-2 ring-[var(--accent)] ring-opacity-50' : '',
+                  ].join(' ')}
+                  onDragStart={(event) => handleFavoriteDragStart(event, file.id)}
+                  onDragOver={(event) => handleFavoriteDragOver(event, file.id)}
+                  onDragLeave={handleFavoriteDragLeave}
+                  onDrop={(event) => handleFavoriteDrop(event, file.id)}
+                  onDragEnd={handleFavoriteDragEnd}
+                  onKeyDown={(event) => handleFavoriteKeyDown(event, file.id)}
+                >
+                  {isDropTargetBefore && (
+                    <div className="pointer-events-none absolute top-0 left-0 right-0 h-0.5 bg-[var(--accent)] rounded-full" />
                   )}
-                  <div
-                    draggable
-                    tabIndex={0}
-                    role="button"
-                    aria-label={`收藏文件: ${file.name}，按 Ctrl+上下箭头移动位置`}
-                    className={[
-                      FAVORITE_ITEM_BASE_STYLES,
-                      isActive ? FAVORITE_ITEM_ACTIVE_STYLES : FAVORITE_ITEM_HOVER_STYLES,
-                      isDragging ? 'opacity-40' : '',
-                      isDropTarget ? 'ring-2 ring-[var(--accent)] ring-opacity-50' : '',
-                    ].join(' ')}
-                    onDragStart={(event) => handleFavoriteDragStart(event, file.id)}
-                    onDragOver={(event) => handleFavoriteDragOver(event, file.id)}
-                    onDragLeave={handleFavoriteDragLeave}
-                    onDrop={(event) => handleFavoriteDrop(event, file.id)}
-                    onDragEnd={handleFavoriteDragEnd}
-                    onKeyDown={(event) => handleFavoriteKeyDown(event, file.id)}
+                  {isDropTargetAfter && (
+                    <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--accent)] rounded-full" />
+                  )}
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-2 bg-transparent p-0 text-left text-[var(--text-main)]"
+                    onClick={() => onSelectFile(file)}
+                    tabIndex={-1}
                   >
-                    <button
-                      type="button"
-                      className="flex min-w-0 flex-1 items-center gap-2 bg-transparent p-0 text-left text-[var(--text-main)]"
-                      onClick={() => onSelectFile(file)}
-                      tabIndex={-1}
-                    >
-                      <GripVertical 
-                        size={13} 
-                        className="shrink-0 text-[var(--text-muted)]" 
-                        aria-hidden="true"
-                      />
-                      <FileJson size={14} className="shrink-0 text-[var(--accent-strong)]" />
-                      <span className="flex min-w-0 flex-1 flex-col">
-                        <span className="truncate text-sm">
-                          {renderHighlightedText(file.name, searchQuery)}
-                        </span>
-                        <span className="truncate text-xs text-[var(--text-muted)]">
-                          {renderHighlightedText(file.relativePath, searchQuery)}
-                        </span>
+                    <GripVertical 
+                      size={13} 
+                      className="shrink-0 text-[var(--text-muted)]" 
+                      aria-hidden="true"
+                    />
+                    <FileJson size={14} className="shrink-0 text-[var(--accent-strong)]" />
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate text-sm">
+                        {renderHighlightedText(file.name, searchQuery)}
                       </span>
-                    </button>
+                      <span className="truncate text-xs text-[var(--text-muted)]">
+                        {renderHighlightedText(file.relativePath, searchQuery)}
+                      </span>
+                    </span>
+                  </button>
 
-                    <button
-                      type="button"
-                      className={BUTTON_ICON_STYLES}
-                      aria-label="取消收藏"
-                      title="取消收藏"
-                      tabIndex={-1}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onToggleFavoriteFile(file.id);
-                      }}
-                    >
-                      <Star size={14} className="fill-current text-[var(--warning)]" />
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className={BUTTON_ICON_STYLES}
+                    aria-label="取消收藏"
+                    title="取消收藏"
+                    tabIndex={-1}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onToggleFavoriteFile(file.id);
+                    }}
+                  >
+                    <Star size={14} className="fill-current text-[var(--warning)]" />
+                  </button>
                 </div>
               );
             })}
@@ -411,4 +438,11 @@ function renderHighlightedText(text: string, query: string): JSX.Element {
       ))}
     </>
   );
+}
+
+function resolveDropPosition(event: DragEvent<HTMLDivElement>): FavoriteDropPosition {
+  const rect = event.currentTarget.getBoundingClientRect();
+  const offsetY = event.clientY - rect.top;
+
+  return offsetY < rect.height / 2 ? 'before' : 'after';
 }
