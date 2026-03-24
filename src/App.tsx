@@ -92,8 +92,9 @@ function App() {
     () => initialLastOpenStateRef.current?.directoryName ?? '',
   );
   const restoredLastDirectoryRef = useRef(false);
+  const restoreSessionTokenRef = useRef(0);
   const loadDirectoryFromHandleRef = useRef<
-    (directoryHandle: FileSystemDirectoryHandle, shouldPersistHandle: boolean) => Promise<void>
+    (directoryHandle: FileSystemDirectoryHandle, shouldPersistHandle: boolean, sessionToken?: number) => Promise<void>
   >(async () => {});
   const handleCursorRestored = useCallback(() => {
     setCursorToRestore(null);
@@ -259,11 +260,22 @@ function App() {
   );
 
   const loadDirectoryFromHandle = useCallback(
-    async (directoryHandle: FileSystemDirectoryHandle, shouldPersistHandle: boolean) => {
+    async (directoryHandle: FileSystemDirectoryHandle, shouldPersistHandle: boolean, sessionToken?: number) => {
+      const isSessionValid = () => sessionToken === undefined || sessionToken === restoreSessionTokenRef.current;
+
       setSaveState('saving', '扫描中');
+      
       const scannedFiles = await scanJsonFiles(directoryHandle);
+      if (!isSessionValid()) {
+        return;
+      }
+
       const directoryTree = buildDirectoryTree(directoryHandle.name, scannedFiles);
       const expandedIds = collectDirectoryIds(directoryTree);
+
+      if (!isSessionValid()) {
+        return;
+      }
 
       setDirectoryData({
         directoryHandle,
@@ -296,7 +308,15 @@ function App() {
           : null;
       const fileToOpen = preferredFile ?? scannedFiles[0];
 
+      if (!isSessionValid()) {
+        return;
+      }
+
       await openFile(fileToOpen, false);
+
+      if (!isSessionValid()) {
+        return;
+      }
 
       if (fromSameDirectory && preferredFile) {
         setCursorToRestore(fromSameDirectory.cursor ?? null);
@@ -388,14 +408,9 @@ function App() {
         return;
       }
 
-      setIsInitializing(true);
-
       try {
         const lastHandle = await loadLastDirectoryHandle();
         if (!lastHandle || cancelled) {
-          if (!cancelled) {
-            setIsInitializing(false);
-          }
           return;
         }
 
@@ -407,36 +422,43 @@ function App() {
           return;
         }
 
-        if (permission === 'denied') {
-          setSaveState('idle', '检测到上次目录，可点击“继续使用此目录”恢复访问');
-          setIsInitializing(false);
+        if (permission === 'denied' || permission === 'prompt') {
+          if (!cancelled) {
+            setSaveState('idle', '检测到上次目录，可点击"继续使用此目录"恢复访问');
+          }
           return;
         }
 
-        try {
-          await loadDirectoryFromHandleRef.current(lastHandle, true);
-          if (!cancelled) {
-            setSaveState('idle', '已自动恢复上次目录');
-          }
+        const currentSessionToken = ++restoreSessionTokenRef.current;
+        const AUTO_RESTORE_TIMEOUT_MS = 5000;
+
+        const restorePromise = loadDirectoryFromHandleRef.current(lastHandle, true, currentSessionToken);
+        const timeoutPromise = new Promise<'timeout'>((resolve) => {
+          setTimeout(() => resolve('timeout'), AUTO_RESTORE_TIMEOUT_MS);
+        });
+
+        const result = await Promise.race([
+          restorePromise.then(() => 'success' as const),
+          timeoutPromise,
+        ]);
+
+        if (cancelled) {
           return;
-        } catch {
-          if (permission === 'prompt') {
-            if (!cancelled) {
-              setSaveState('idle', '检测到上次目录，可点击“继续使用此目录”恢复访问');
-              setIsInitializing(false);
-            }
-            return;
-          }
-          throw new Error('restore-failed');
+        }
+
+        if (result === 'timeout') {
+          restoreSessionTokenRef.current++;
+          setSaveState('idle', '检测到上次目录，可点击"继续使用此目录"恢复访问');
+        } else {
+          setSaveState('idle', '已自动恢复上次目录');
         }
       } catch {
         if (!cancelled) {
-          setSaveState('idle', '请点击“打开目录”');
+          setSaveState('idle', '检测到上次目录，可点击"继续使用此目录"恢复访问');
         }
       } finally {
-        if (!cancelled) {
-          setIsInitializing(false);
-        }
+        // 无论何种情况（含 React Strict Mode 下 cancelled=true）都必须退出初始化
+        setIsInitializing(false);
       }
     };
 
@@ -646,10 +668,6 @@ function App() {
             </div>
           )}
           <div className="min-h-0 flex-1 bg-[var(--bg-editor)]">
-            {(() => {
-              console.log('[Debug] isInitializing:', isInitializing, 'tree:', !!tree, 'activeFile:', !!activeFile, 'showWelcomeScreen:', showWelcomeScreen);
-              return null;
-            })()}
             {isInitializing ? (
               <div className="flex h-full items-center justify-center px-6">
                 <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-toolbar)] px-6 py-5 text-sm text-[var(--text-muted)] shadow-[var(--shadow)]">
