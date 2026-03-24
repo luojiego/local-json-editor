@@ -17,6 +17,7 @@ interface EditorPaneProps {
   onValidation: (errorCount: number, message: string) => void;
   onCursorChange: (cursor: CursorPosition) => void;
   onScrollChange: (scroll: ScrollPosition) => void;
+  onEditorBlur: () => void;
   onViewStateRestored: () => void;
 }
 
@@ -31,13 +32,20 @@ export function EditorPane({
   onValidation,
   onCursorChange,
   onScrollChange,
+  onEditorBlur,
   onViewStateRestored,
 }: EditorPaneProps) {
   const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  const onEditorBlurRef = useRef(onEditorBlur);
   const cursorListenerRef = useRef<{ dispose: () => void } | null>(null);
   const scrollListenerRef = useRef<{ dispose: () => void } | null>(null);
+  const blurListenerRef = useRef<{ dispose: () => void } | null>(null);
   const restoredCursorKeyRef = useRef<string>('');
   const restoreCursorFrameRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    onEditorBlurRef.current = onEditorBlur;
+  }, [onEditorBlur]);
 
   const handleEditorMount: OnMount = (editorInstance) => {
     editorRef.current = editorInstance;
@@ -56,6 +64,11 @@ export function EditorPane({
         top: event.scrollTop,
         left: event.scrollLeft,
       });
+    });
+
+    blurListenerRef.current?.dispose();
+    blurListenerRef.current = editorInstance.onDidBlurEditorText(() => {
+      onEditorBlurRef.current();
     });
 
     const position = editorInstance.getPosition();
@@ -77,6 +90,7 @@ export function EditorPane({
     return () => {
       cursorListenerRef.current?.dispose();
       scrollListenerRef.current?.dispose();
+      blurListenerRef.current?.dispose();
       if (restoreCursorFrameRef.current !== null) {
         cancelAnimationFrame(restoreCursorFrameRef.current);
       }

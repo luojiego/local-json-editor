@@ -43,6 +43,9 @@ interface FileSystemCapability {
   isTopLevelContext: boolean;
 }
 
+type SaveTrigger = 'manual' | 'auto';
+type SaveAttemptResult = 'saved' | 'skipped' | 'cancelled' | 'failed';
+
 function App() {
   const {
     files,
@@ -60,6 +63,7 @@ function App() {
     scroll,
     themeId,
     indentSize,
+    autoSaveOnFocus,
     isSidebarCollapsed,
     saveStatus,
     statusMessage,
@@ -76,6 +80,7 @@ function App() {
     setScroll,
     setThemeId,
     setIndentSize,
+    setAutoSaveOnFocus,
     toggleSidebarCollapsed,
     setSidebarCollapsed,
     setSaveState,
@@ -102,6 +107,8 @@ function App() {
     setCursorToRestore(null);
     setScrollToRestore(null);
   }, []);
+  const saveInFlightRef = useRef<Promise<SaveAttemptResult> | null>(null);
+  const autoSaveInvalidNoticeRef = useRef<Map<string, string>>(new Map());
 
   const isMobile = viewportWidth < MOBILE_BREAKPOINT;
   const isTabletOrBelow = viewportWidth <= TABLET_BREAKPOINT;
@@ -496,6 +503,99 @@ function App() {
     };
   }, [fileSystemCapability.supported, setSaveState]);
 
+  const performSave = useCallback(
+    async (trigger: SaveTrigger): Promise<SaveAttemptResult> => {
+      if (!activeFile) {
+        return 'skipped';
+      }
+
+      if (trigger === 'auto' && !isDirty) {
+        return 'skipped';
+      }
+
+      if (saveInFlightRef.current) {
+        return saveInFlightRef.current;
+      }
+
+      const savePromise = (async (): Promise<SaveAttemptResult> => {
+        const validationResult = validateJsonContent(content);
+
+        if (!validationResult.valid) {
+          if (trigger === 'manual') {
+            const forceSave = window.confirm(
+              `JSON 格式存在错误：${validationResult.message}\n是否继续强制保存？`,
+            );
+
+            if (!forceSave) {
+              setSaveState('idle', '已取消');
+              return 'cancelled';
+            }
+          } else {
+            const contentSignature = createContentSignature(content);
+            const lastSignature = autoSaveInvalidNoticeRef.current.get(activeFile.id);
+            if (lastSignature !== contentSignature) {
+              autoSaveInvalidNoticeRef.current.set(activeFile.id, contentSignature);
+              window.alert(`自动保存已跳过：${validationResult.message}`);
+            }
+            setSaveState('error', '自动保存跳过');
+            return 'skipped';
+          }
+        } else {
+          autoSaveInvalidNoticeRef.current.delete(activeFile.id);
+        }
+
+        try {
+          setSaveState('saving', trigger === 'auto' ? '自动保存中' : '保存中');
+
+          let nextPersistedContent = content;
+          if (validationResult.valid) {
+            try {
+              nextPersistedContent = mergeJsonWithOriginalFormatting(
+                persistedContent,
+                content,
+                indentSize,
+              );
+            } catch {
+              nextPersistedContent = content;
+            }
+          }
+
+          await saveFileContent(activeFile.handle, nextPersistedContent);
+          markSaved(nextPersistedContent);
+          return 'saved';
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '保存失败';
+          if (trigger === 'auto') {
+            setSaveState('error', '自动保存失败');
+            window.alert(`自动保存失败: ${message}`);
+          } else {
+            setSaveState('error', '保存失败');
+            window.alert(`保存失败: ${message}`);
+          }
+          return 'failed';
+        }
+      })();
+
+      saveInFlightRef.current = savePromise;
+      try {
+        return await savePromise;
+      } finally {
+        if (saveInFlightRef.current === savePromise) {
+          saveInFlightRef.current = null;
+        }
+      }
+    },
+    [activeFile, content, indentSize, isDirty, markSaved, persistedContent, setSaveState],
+  );
+
+  const handleEditorBlur = useCallback(() => {
+    if (!autoSaveOnFocus) {
+      return;
+    }
+
+    void performSave('auto');
+  }, [autoSaveOnFocus, performSave]);
+
   const handleSelectFile = useCallback(
     async (file: JsonFileRecord) => {
       if (isTabletOrBelow) {
@@ -504,52 +604,31 @@ function App() {
 
       setCursorToRestore(null);
       setScrollToRestore(null);
-      await openFile(file, true);
-    },
-    [isTabletOrBelow, openFile, setSidebarCollapsed],
-  );
 
-  const handleSaveFile = useCallback(async () => {
-    if (!activeFile) {
-      return;
-    }
-
-    const validationResult = validateJsonContent(content);
-    if (!validationResult.valid) {
-      const forceSave = window.confirm(
-        `JSON 格式存在错误：${validationResult.message}\n是否继续强制保存？`,
-      );
-
-      if (!forceSave) {
-        setSaveState('idle', '已取消');
-        return;
-      }
-    }
-
-    try {
-      setSaveState('saving', '保存中');
-
-      let nextPersistedContent = content;
-      if (validationResult.valid) {
-        try {
-          nextPersistedContent = mergeJsonWithOriginalFormatting(
-            persistedContent,
-            content,
-            indentSize,
-          );
-        } catch {
-          nextPersistedContent = content;
+      let shouldCheckDirty = true;
+      if (autoSaveOnFocus && isDirty && activeFileId && activeFileId !== file.id) {
+        const saveResult = await performSave('auto');
+        if (saveResult === 'saved') {
+          shouldCheckDirty = false;
         }
       }
 
-      await saveFileContent(activeFile.handle, nextPersistedContent);
-      markSaved(nextPersistedContent);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '保存失败';
-      setSaveState('error', '保存失败');
-      window.alert(`保存失败: ${message}`);
-    }
-  }, [activeFile, content, indentSize, markSaved, persistedContent, setSaveState]);
+      await openFile(file, shouldCheckDirty);
+    },
+    [
+      activeFileId,
+      autoSaveOnFocus,
+      isDirty,
+      isTabletOrBelow,
+      openFile,
+      performSave,
+      setSidebarCollapsed,
+    ],
+  );
+
+  const handleSaveFile = useCallback(async () => {
+    await performSave('manual');
+  }, [performSave]);
 
   const handleFormat = useCallback(() => {
     if (!activeFile) {
@@ -628,10 +707,12 @@ function App() {
         saveLabel={saveLabel}
         indentSize={indentSize}
         themeId={themeId}
+        autoSaveOnFocus={autoSaveOnFocus}
         onOpenDirectory={() => void handleOpenDirectory()}
         onSave={() => void handleSaveFile()}
         onFormat={handleFormat}
         onClearCache={() => void handleClearCache()}
+        onToggleAutoSave={() => setAutoSaveOnFocus(!autoSaveOnFocus)}
         onIndentSizeChange={setIndentSize}
         onThemeChange={setThemeId}
         onToggleSidebar={toggleSidebarCollapsed}
@@ -747,6 +828,7 @@ function App() {
                 onValidation={(errorCount, message) => setValidation({ errorCount, message })}
                 onCursorChange={setCursor}
                 onScrollChange={setScroll}
+                onEditorBlur={handleEditorBlur}
                 onViewStateRestored={handleCursorRestored}
               />
             )}
@@ -759,6 +841,15 @@ function App() {
 }
 
 export default App;
+
+function createContentSignature(content: string): string {
+  let hash = 0;
+  for (let index = 0; index < content.length; index += 1) {
+    hash = (hash * 31 + content.charCodeAt(index)) | 0;
+  }
+
+  return `${content.length}:${hash}`;
+}
 
 function clearAppLocalStorage(): void {
   if (typeof window === 'undefined') {

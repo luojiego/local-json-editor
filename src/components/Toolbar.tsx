@@ -8,10 +8,12 @@ interface ToolbarProps {
   saveLabel: string;
   indentSize: 2 | 4;
   themeId: string;
+  autoSaveOnFocus: boolean;
   onOpenDirectory: () => void;
   onSave: () => void;
   onFormat: () => void;
   onClearCache: () => void;
+  onToggleAutoSave: () => void;
   onIndentSizeChange: (indentSize: 2 | 4) => void;
   onThemeChange: (themeId: string) => void;
   onToggleSidebar: () => void;
@@ -23,10 +25,12 @@ export function Toolbar({
   saveLabel,
   indentSize,
   themeId,
+  autoSaveOnFocus,
   onOpenDirectory,
   onSave,
   onFormat,
   onClearCache,
+  onToggleAutoSave,
   onIndentSizeChange,
   onThemeChange,
   onToggleSidebar,
@@ -81,6 +85,20 @@ export function Toolbar({
             格式化
           </button>
         </div>
+
+        <button
+          type="button"
+          className={[
+            'inline-flex h-9 items-center gap-2 rounded-md border px-3 text-xs font-semibold transition',
+            autoSaveOnFocus
+              ? 'border-[color-mix(in_srgb,var(--success)_42%,var(--border))] text-[var(--success)] hover:bg-[color-mix(in_srgb,var(--success)_12%,transparent)]'
+              : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--accent)] hover:text-[var(--text-main)]',
+          ].join(' ')}
+          onClick={onToggleAutoSave}
+          title="失焦自动保存"
+        >
+          Auto Save: {autoSaveOnFocus ? 'On' : 'Off'}
+        </button>
 
         <button
           type="button"

@@ -38,6 +38,7 @@ interface EditorStore {
   scroll: ScrollPosition;
   themeId: string;
   indentSize: JsonIndentSize;
+  autoSaveOnFocus: boolean;
   isSidebarCollapsed: boolean;
   saveStatus: SaveStatus;
   statusMessage: string;
@@ -54,6 +55,7 @@ interface EditorStore {
   setScroll: (scroll: ScrollPosition) => void;
   setThemeId: (themeId: string) => void;
   setIndentSize: (indentSize: JsonIndentSize) => void;
+  setAutoSaveOnFocus: (enabled: boolean) => void;
   toggleSidebarCollapsed: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
   setSaveState: (saveStatus: SaveStatus, statusMessage: string) => void;
@@ -61,7 +63,9 @@ interface EditorStore {
 }
 
 const THEME_STORAGE_KEY = 'json-editor-theme';
+const AUTO_SAVE_ON_FOCUS_STORAGE_KEY = 'json-editor-auto-save-on-focus';
 const DEFAULT_THEME_ID = readThemeFromStorage();
+const DEFAULT_AUTO_SAVE_ON_FOCUS = readAutoSaveOnFocusFromStorage();
 
 export const useEditorStore = create<EditorStore>((set) => ({
   directoryHandle: null,
@@ -89,6 +93,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
   },
   themeId: DEFAULT_THEME_ID,
   indentSize: 2,
+  autoSaveOnFocus: DEFAULT_AUTO_SAVE_ON_FOCUS,
   isSidebarCollapsed: false,
   saveStatus: 'idle',
   statusMessage: '未保存',
@@ -250,6 +255,10 @@ export const useEditorStore = create<EditorStore>((set) => ({
   setIndentSize: (indentSize) => {
     set({ indentSize });
   },
+  setAutoSaveOnFocus: (autoSaveOnFocus) => {
+    localStorage.setItem(AUTO_SAVE_ON_FOCUS_STORAGE_KEY, autoSaveOnFocus ? '1' : '0');
+    set({ autoSaveOnFocus });
+  },
   toggleSidebarCollapsed: () => {
     set((state) => ({
       isSidebarCollapsed: !state.isSidebarCollapsed,
@@ -274,4 +283,12 @@ function readThemeFromStorage(): string {
   }
 
   return localStorage.getItem(THEME_STORAGE_KEY) ?? fallback;
+}
+
+function readAutoSaveOnFocusFromStorage(): boolean {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  return window.localStorage.getItem(AUTO_SAVE_ON_FOCUS_STORAGE_KEY) === '1';
 }
