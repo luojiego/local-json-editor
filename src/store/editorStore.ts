@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 
+import { loadFavoriteFileIds, saveFavoriteFileIds } from '../lib/favorites';
 import type {
   CursorPosition,
   DirectoryTreeNode,
@@ -31,6 +32,7 @@ interface EditorStore {
   isDirty: boolean;
   searchQuery: string;
   expandedDirectories: Record<string, boolean>;
+  favoriteFileIds: string[];
   validation: ValidationState;
   cursor: CursorPosition;
   scroll: ScrollPosition;
@@ -45,6 +47,8 @@ interface EditorStore {
   setDirty: (dirty: boolean) => void;
   setSearchQuery: (query: string) => void;
   toggleDirectoryExpanded: (directoryId: string) => void;
+  toggleFavoriteFile: (fileId: string) => void;
+  moveFavoriteFile: (draggingFileId: string, targetFileId: string) => void;
   setValidation: (validation: ValidationState) => void;
   setCursor: (cursor: CursorPosition) => void;
   setScroll: (scroll: ScrollPosition) => void;
@@ -70,6 +74,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
   isDirty: false,
   searchQuery: '',
   expandedDirectories: {},
+  favoriteFileIds: [],
   validation: {
     errorCount: 0,
     message: '请选择一个 JSON 文件开始编辑',
@@ -91,6 +96,13 @@ export const useEditorStore = create<EditorStore>((set) => ({
     const expandedDirectories = Object.fromEntries(
       expandedDirectoryIds.map((directoryId) => [directoryId, true]),
     );
+    const availableFileIds = new Set(files.map((file) => file.id));
+    const persistedFavoriteFileIds = loadFavoriteFileIds(directoryName);
+    const favoriteFileIds = persistedFavoriteFileIds.filter((fileId) => availableFileIds.has(fileId));
+
+    if (persistedFavoriteFileIds.length !== favoriteFileIds.length) {
+      saveFavoriteFileIds(directoryName, favoriteFileIds);
+    }
 
     set({
       directoryHandle,
@@ -98,6 +110,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       files,
       tree,
       expandedDirectories,
+      favoriteFileIds,
       activeFileId: null,
       content: '',
       persistedContent: '',
@@ -157,6 +170,69 @@ export const useEditorStore = create<EditorStore>((set) => ({
         [directoryId]: !state.expandedDirectories[directoryId],
       },
     }));
+  },
+  toggleFavoriteFile: (fileId) => {
+    set((state) => {
+      if (!state.directoryName) {
+        console.warn('无法切换收藏状态：未打开目录');
+        return {};
+      }
+
+      if (!state.files.some((file) => file.id === fileId)) {
+        console.warn('无法切换收藏状态：文件不存在');
+        return {};
+      }
+
+      const exists = state.favoriteFileIds.includes(fileId);
+      const nextFavoriteFileIds = exists
+        ? state.favoriteFileIds.filter((id) => id !== fileId)
+        : [...state.favoriteFileIds, fileId];
+
+      try {
+        saveFavoriteFileIds(state.directoryName, nextFavoriteFileIds);
+        return { favoriteFileIds: nextFavoriteFileIds };
+      } catch (error) {
+        console.error('保存收藏状态失败:', error);
+        return {};
+      }
+    });
+  },
+  moveFavoriteFile: (draggingFileId, targetFileId) => {
+    set((state) => {
+      if (!state.directoryName) {
+        console.warn('无法移动收藏文件：未打开目录');
+        return {};
+      }
+
+      if (draggingFileId === targetFileId) {
+        return {};
+      }
+
+      const fromIndex = state.favoriteFileIds.indexOf(draggingFileId);
+      const toIndex = state.favoriteFileIds.indexOf(targetFileId);
+
+      if (fromIndex < 0) {
+        console.warn('无法移动收藏文件：源文件不在收藏列表中');
+        return {};
+      }
+
+      if (toIndex < 0) {
+        console.warn('无法移动收藏文件：目标文件不在收藏列表中');
+        return {};
+      }
+
+      const nextFavoriteFileIds = [...state.favoriteFileIds];
+      nextFavoriteFileIds.splice(fromIndex, 1);
+      nextFavoriteFileIds.splice(toIndex, 0, draggingFileId);
+
+      try {
+        saveFavoriteFileIds(state.directoryName, nextFavoriteFileIds);
+        return { favoriteFileIds: nextFavoriteFileIds };
+      } catch (error) {
+        console.error('保存收藏顺序失败:', error);
+        return {};
+      }
+    });
   },
   setValidation: (validation) => {
     set({ validation });

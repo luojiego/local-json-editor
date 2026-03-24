@@ -52,6 +52,7 @@ function App() {
     isDirty,
     searchQuery,
     expandedDirectories,
+    favoriteFileIds,
     validation,
     cursor,
     scroll,
@@ -66,6 +67,8 @@ function App() {
     setDirty,
     setSearchQuery,
     toggleDirectoryExpanded,
+    toggleFavoriteFile,
+    moveFavoriteFile,
     setValidation,
     setCursor,
     setScroll,
@@ -617,7 +620,10 @@ function App() {
               filesById={filesById}
               searchQuery={searchQuery}
               expandedDirectories={expandedDirectories}
+              favoriteFileIds={favoriteFileIds}
               onToggleDirectory={toggleDirectoryExpanded}
+              onToggleFavoriteFile={toggleFavoriteFile}
+              onMoveFavoriteFile={moveFavoriteFile}
               onSelectFile={(file) => void handleSelectFile(file)}
               visibleFileIds={visibleFileIds}
             />
