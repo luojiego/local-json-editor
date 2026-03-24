@@ -4,21 +4,20 @@ import Editor, { type Monaco, type OnMount } from '@monaco-editor/react';
 import type { editor as MonacoEditor } from 'monaco-editor';
 
 import { defineMonacoThemes } from '../lib/themes';
-import type { CursorPosition, ScrollPosition } from '../types/editor';
+import type { CursorPosition, ScrollPosition, ViewRestoreRequest } from '../types/editor';
 
 interface EditorPaneProps {
   value: string;
   modelPath: string | null;
   monacoThemeId: string;
   indentation: 2 | 4;
-  cursorToRestore: CursorPosition | null;
-  scrollToRestore: ScrollPosition | null;
-  onChange: (content: string) => void;
+  restoreRequest: ViewRestoreRequest | null;
+  onChange: (content: string, source: 'user' | 'programmatic') => void;
   onValidation: (errorCount: number, message: string) => void;
   onCursorChange: (cursor: CursorPosition) => void;
   onScrollChange: (scroll: ScrollPosition) => void;
   onEditorBlur: () => void;
-  onViewStateRestored: () => void;
+  onViewStateRestored: (requestId: number) => void;
 }
 
 export function EditorPane({
@@ -26,8 +25,7 @@ export function EditorPane({
   modelPath,
   monacoThemeId,
   indentation,
-  cursorToRestore,
-  scrollToRestore,
+  restoreRequest,
   onChange,
   onValidation,
   onCursorChange,
@@ -40,7 +38,7 @@ export function EditorPane({
   const cursorListenerRef = useRef<{ dispose: () => void } | null>(null);
   const scrollListenerRef = useRef<{ dispose: () => void } | null>(null);
   const blurListenerRef = useRef<{ dispose: () => void } | null>(null);
-  const restoredCursorKeyRef = useRef<string>('');
+  const lastRestoredRequestIdRef = useRef<number>(0);
   const restoreCursorFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -98,14 +96,11 @@ export function EditorPane({
   }, []);
 
   useEffect(() => {
-    if ((!cursorToRestore && !scrollToRestore) || !modelPath) {
+    if (!restoreRequest || !modelPath) {
       return;
     }
 
-    const cursorKey = cursorToRestore ? `${cursorToRestore.line}:${cursorToRestore.column}` : 'none';
-    const scrollKey = scrollToRestore ? `${scrollToRestore.top}:${scrollToRestore.left}` : 'none';
-    const restoreKey = `${modelPath}:${cursorKey}:${scrollKey}`;
-    if (restoredCursorKeyRef.current === restoreKey) {
+    if (lastRestoredRequestIdRef.current === restoreRequest.requestId) {
       return;
     }
 
@@ -123,15 +118,17 @@ export function EditorPane({
         return;
       }
 
-      restoredCursorKeyRef.current = restoreKey;
-      if (scrollToRestore) {
-        editorInstance.setScrollTop(Math.max(0, scrollToRestore.top));
-        editorInstance.setScrollLeft(Math.max(0, scrollToRestore.left));
+      lastRestoredRequestIdRef.current = restoreRequest.requestId;
+      const { cursor, reason, scroll } = restoreRequest;
+
+      if (reason === 'file-switch' && scroll) {
+        editorInstance.setScrollTop(Math.max(0, scroll.top));
+        editorInstance.setScrollLeft(Math.max(0, scroll.left));
       }
 
-      if (cursorToRestore) {
-        const lineNumber = clamp(cursorToRestore.line, 1, model.getLineCount());
-        const column = clamp(cursorToRestore.column, 1, model.getLineMaxColumn(lineNumber));
+      if (cursor) {
+        const lineNumber = clamp(cursor.line, 1, model.getLineCount());
+        const column = clamp(cursor.column, 1, model.getLineMaxColumn(lineNumber));
         editorInstance.setPosition({ lineNumber, column });
         editorInstance.setSelection({
           startLineNumber: lineNumber,
@@ -140,17 +137,21 @@ export function EditorPane({
           endColumn: column,
         });
 
-        // Preserve horizontal/vertical viewport exactly as recorded when scroll state exists.
-        if (!scrollToRestore) {
+        if (reason === 'format') {
+          editorInstance.revealPositionInCenter({ lineNumber, column });
+        } else if (!scroll) {
           editorInstance.revealPositionInCenterIfOutsideViewport({ lineNumber, column });
         } else {
-          editorInstance.setScrollTop(Math.max(0, scrollToRestore.top));
-          editorInstance.setScrollLeft(Math.max(0, scrollToRestore.left));
+          editorInstance.setScrollTop(Math.max(0, scroll.top));
+          editorInstance.setScrollLeft(Math.max(0, scroll.left));
         }
+      } else if (scroll) {
+        editorInstance.setScrollTop(Math.max(0, scroll.top));
+        editorInstance.setScrollLeft(Math.max(0, scroll.left));
       }
 
       editorInstance.focus();
-      onViewStateRestored();
+      onViewStateRestored(restoreRequest.requestId);
     };
 
     restoreCursorFrameRef.current = requestAnimationFrame(applyRestore);
@@ -160,7 +161,7 @@ export function EditorPane({
         cancelAnimationFrame(restoreCursorFrameRef.current);
       }
     };
-  }, [cursorToRestore, modelPath, onViewStateRestored, scrollToRestore, value]);
+  }, [modelPath, onViewStateRestored, restoreRequest, value]);
 
   if (!modelPath) {
     return (
@@ -182,7 +183,10 @@ export function EditorPane({
       theme={monacoThemeId}
       beforeMount={registerMonacoThemes}
       onMount={handleEditorMount}
-      onChange={(content) => onChange(content ?? '')}
+      onChange={(content, event) => {
+        const source = event?.isFlush === false ? 'user' : 'programmatic';
+        onChange(content ?? '', source);
+      }}
       onValidate={(markers) => {
         const errors = markers.filter((marker) => marker.severity === 8);
 

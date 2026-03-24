@@ -39,6 +39,15 @@ export interface ValidationState {
   message: string;
 }
 
+export type ViewRestoreReason = 'file-switch' | 'format';
+
+export interface ViewRestoreRequest {
+  requestId: number;
+  reason: ViewRestoreReason;
+  cursor: CursorPosition | null;
+  scroll: ScrollPosition | null;
+}
+
 export interface SearchResult {
   file: JsonFileRecord;
   score: number;

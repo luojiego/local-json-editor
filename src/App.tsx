@@ -14,7 +14,7 @@ import {
   scanJsonFiles,
 } from './lib/fileSystem';
 import {
-  formatJson,
+  formatJsonWithCursorOffset,
   hasSemanticDifference,
   mergeJsonWithOriginalFormatting,
   validateJsonContent,
@@ -26,15 +26,26 @@ import {
   queryDirectoryPermission,
   saveLastDirectoryHandle,
 } from './lib/lastDirectory';
-import { loadLastOpenState, saveLastOpenState } from './lib/lastOpenState';
+import {
+  loadLastOpenState,
+  pruneFileEditorStates,
+  saveLastOpenState,
+} from './lib/lastOpenState';
 import { applyThemeVariables, getThemeById } from './lib/themes';
 import { searchFiles } from './lib/search';
 import { useEditorStore } from './store/editorStore';
-import type { CursorPosition, JsonFileRecord, ScrollPosition } from './types/editor';
+import type {
+  CursorPosition,
+  JsonFileRecord,
+  ScrollPosition,
+  ViewRestoreRequest,
+} from './types/editor';
 
 const TABLET_BREAKPOINT = 1200;
 const MOBILE_BREAKPOINT = 768;
 const LOCAL_STORAGE_APP_KEY_PREFIX = 'json-editor-';
+const DEFAULT_CURSOR: CursorPosition = { line: 1, column: 1 };
+const DEFAULT_SCROLL: ScrollPosition = { top: 0, left: 0 };
 
 interface FileSystemCapability {
   supported: boolean;
@@ -58,9 +69,9 @@ function App() {
     searchQuery,
     expandedDirectories,
     favoriteFileIds,
+    fileViewStates,
     validation,
     cursor,
-    scroll,
     themeId,
     indentSize,
     autoSaveOnFocus,
@@ -78,6 +89,8 @@ function App() {
     setValidation,
     setCursor,
     setScroll,
+    markActiveFileFormatted,
+    clearActiveFileFormatted,
     setThemeId,
     setIndentSize,
     setAutoSaveOnFocus,
@@ -88,8 +101,7 @@ function App() {
   } = useEditorStore();
 
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
-  const [cursorToRestore, setCursorToRestore] = useState<CursorPosition | null>(null);
-  const [scrollToRestore, setScrollToRestore] = useState<ScrollPosition | null>(null);
+  const [restoreRequest, setRestoreRequest] = useState<ViewRestoreRequest | null>(null);
   const initialLastOpenStateRef = useRef(loadLastOpenState());
   const [isInitializing, setIsInitializing] = useState(true);
   const [hasRecentDirectory, setHasRecentDirectory] = useState(
@@ -103,9 +115,21 @@ function App() {
   const loadDirectoryFromHandleRef = useRef<
     (directoryHandle: FileSystemDirectoryHandle, shouldPersistHandle: boolean, sessionToken?: number) => Promise<void>
   >(async () => {});
-  const handleCursorRestored = useCallback(() => {
-    setCursorToRestore(null);
-    setScrollToRestore(null);
+  const restoreRequestIdRef = useRef(0);
+  const enqueueRestoreRequest = useCallback(
+    (reason: ViewRestoreRequest['reason'], nextCursor: CursorPosition | null, nextScroll: ScrollPosition | null) => {
+      restoreRequestIdRef.current += 1;
+      setRestoreRequest({
+        requestId: restoreRequestIdRef.current,
+        reason,
+        cursor: nextCursor,
+        scroll: nextScroll,
+      });
+    },
+    [],
+  );
+  const handleCursorRestored = useCallback((requestId: number) => {
+    setRestoreRequest((current) => (current?.requestId === requestId ? null : current));
   }, []);
   const saveInFlightRef = useRef<Promise<SaveAttemptResult> | null>(null);
   const autoSaveInvalidNoticeRef = useRef<Map<string, string>>(new Map());
@@ -141,6 +165,10 @@ function App() {
 
     return filesById.get(activeFileId) ?? null;
   }, [activeFileId, filesById]);
+  const activeFileViewState = useMemo(
+    () => (activeFileId ? fileViewStates[activeFileId] ?? null : null),
+    [activeFileId, fileViewStates],
+  );
 
   const searchResults = useMemo(() => searchFiles(files, searchQuery), [files, searchQuery]);
   const visibleFileIds = useMemo(
@@ -161,8 +189,22 @@ function App() {
       return '失败';
     }
 
-    return isDirty ? '未保存' : '就绪';
-  }, [isDirty, saveStatus]);
+    if (isDirty) {
+      return '未保存';
+    }
+
+    return activeFileViewState?.formatted ? '已格式化' : '就绪';
+  }, [activeFileViewState?.formatted, isDirty, saveStatus]);
+
+  useEffect(() => {
+    logViewStateDebug('save-label-evaluated', {
+      activeFileId,
+      saveStatus,
+      isDirty,
+      formatted: activeFileViewState?.formatted ?? false,
+      saveLabel,
+    });
+  }, [activeFileId, activeFileViewState?.formatted, isDirty, saveLabel, saveStatus]);
 
   const fileSystemIssueMessage = useMemo(() => {
     if (fileSystemCapability.supported) {
@@ -223,23 +265,22 @@ function App() {
   }, [isDirty, saveStatus, setSaveState]);
 
   useEffect(() => {
-    if (!directoryName || !activeFileId) {
+    if (!directoryName) {
       return;
     }
 
     const timer = window.setTimeout(() => {
       saveLastOpenState({
         directoryName,
-        fileId: activeFileId,
-        cursor,
-        scroll,
+        activeFileId: activeFileId ?? '',
+        files: fileViewStates,
       });
     }, 180);
 
     return () => {
       window.clearTimeout(timer);
     };
-  }, [activeFileId, cursor, directoryName, scroll]);
+  }, [activeFileId, directoryName, fileViewStates]);
 
   const openFile = useCallback(
     async (file: JsonFileRecord, checkDirty: boolean) => {
@@ -252,20 +293,48 @@ function App() {
 
       try {
         const fileContent = await readFileContent(file.handle);
-        setActiveFileContent(file.id, fileContent);
 
-        const validationResult = validateJsonContent(fileContent);
+        const restoredState = useEditorStore.getState().fileViewStates[file.id] ?? null;
+        logViewStateDebug('open-file-restored-state', {
+          fileId: file.id,
+          formatted: restoredState?.formatted ?? false,
+          cursorOffset: restoredState?.cursorOffset ?? null,
+        });
+
+        let displayContent = fileContent;
+        if (restoredState?.formatted) {
+          try {
+            const { formattedContent } = formatJsonWithCursorOffset(
+              fileContent,
+              indentSize,
+              restoredState.cursorOffset,
+            );
+            displayContent = formattedContent;
+          } catch {
+            // 格式化失败（如文件已损坏），回退到原始内容
+          }
+        }
+
+        setActiveFileContent(file.id, displayContent);
+
+        const validationResult = validateJsonContent(displayContent);
         setValidation({
           errorCount: validationResult.valid ? 0 : 1,
           message: validationResult.valid ? 'JSON 格式正确' : validationResult.message,
         });
+
+        enqueueRestoreRequest(
+          'file-switch',
+          restoredState?.cursor ?? DEFAULT_CURSOR,
+          restoredState?.scroll ?? DEFAULT_SCROLL,
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : '读取文件失败';
         setSaveState('error', '读取失败');
         window.alert(`读取文件失败: ${message}`);
       }
     },
-    [activeFileId, isDirty, setActiveFileContent, setSaveState, setValidation],
+    [activeFileId, enqueueRestoreRequest, indentSize, isDirty, setActiveFileContent, setSaveState, setValidation],
   );
 
   const loadDirectoryFromHandle = useCallback(
@@ -273,7 +342,7 @@ function App() {
       const isSessionValid = () => sessionToken === undefined || sessionToken === restoreSessionTokenRef.current;
 
       setSaveState('saving', '扫描中');
-      
+
       const scannedFiles = await scanJsonFiles(directoryHandle);
       if (!isSessionValid()) {
         return;
@@ -281,6 +350,13 @@ function App() {
 
       const directoryTree = buildDirectoryTree(directoryHandle.name, scannedFiles);
       const expandedIds = collectDirectoryIds(directoryTree);
+      const availableFileIds = new Set(scannedFiles.map((file) => file.id));
+      const lastOpenState = loadLastOpenState();
+      const fromSameDirectory =
+        lastOpenState && lastOpenState.directoryName === directoryHandle.name ? lastOpenState : null;
+      const restoredFileViewStates = fromSameDirectory
+        ? pruneFileEditorStates(fromSameDirectory.files, availableFileIds)
+        : {};
 
       if (!isSessionValid()) {
         return;
@@ -292,6 +368,7 @@ function App() {
         files: scannedFiles,
         tree: directoryTree,
         expandedDirectoryIds: expandedIds,
+        fileViewStates: restoredFileViewStates,
       });
 
       if (shouldPersistHandle) {
@@ -301,19 +378,15 @@ function App() {
       setRecentDirectoryName(directoryHandle.name);
 
       if (scannedFiles.length === 0) {
-        setCursorToRestore(null);
-        setScrollToRestore(null);
+        setRestoreRequest(null);
         setSaveState('idle', '未找到 JSON');
         setIsInitializing(false);
         return;
       }
 
-      const lastOpenState = loadLastOpenState();
-      const fromSameDirectory =
-        lastOpenState && lastOpenState.directoryName === directoryHandle.name ? lastOpenState : null;
       const preferredFile =
         fromSameDirectory
-          ? scannedFiles.find((file) => file.id === fromSameDirectory.fileId) ?? null
+          ? scannedFiles.find((file) => file.id === fromSameDirectory.activeFileId) ?? null
           : null;
       const fileToOpen = preferredFile ?? scannedFiles[0];
 
@@ -327,13 +400,6 @@ function App() {
         return;
       }
 
-      if (fromSameDirectory && preferredFile) {
-        setCursorToRestore(fromSameDirectory.cursor ?? null);
-        setScrollToRestore(fromSameDirectory.scroll ?? null);
-      } else {
-        setCursorToRestore(null);
-        setScrollToRestore(null);
-      }
       setSaveState('idle', '目录已打开');
       setIsInitializing(false);
     },
@@ -602,8 +668,7 @@ function App() {
         setSidebarCollapsed(true);
       }
 
-      setCursorToRestore(null);
-      setScrollToRestore(null);
+      setRestoreRequest(null);
 
       let shouldCheckDirty = true;
       if (autoSaveOnFocus && isDirty && activeFileId && activeFileId !== file.id) {
@@ -636,23 +701,77 @@ function App() {
     }
 
     try {
-      const formatted = formatJson(content, indentSize);
-      setContent(formatted);
-      setDirty(hasSemanticDifference(persistedContent, formatted));
+      const cursorOffset = calculateCursorOffset(content, cursor);
+      const { formattedContent, mappedCursorOffset } = formatJsonWithCursorOffset(
+        content,
+        indentSize,
+        cursorOffset,
+      );
+      logViewStateDebug('format-apply', {
+        fileId: activeFile.id,
+        beforeOffset: cursorOffset,
+        mappedOffset: mappedCursorOffset,
+      });
+      const cursorAfterFormat = calculateCursorFromOffset(formattedContent, mappedCursorOffset);
+
+      setContent(formattedContent);
+      setDirty(hasSemanticDifference(persistedContent, formattedContent));
+      setCursor(cursorAfterFormat);
+      markActiveFileFormatted(mappedCursorOffset);
+      enqueueRestoreRequest('format', cursorAfterFormat, null);
       setValidation({ errorCount: 0, message: 'JSON 格式正确' });
       setSaveState('idle', '已格式化');
     } catch (error) {
       const message = error instanceof Error ? error.message : '当前 JSON 无法格式化';
       window.alert(`格式化失败: ${message}`);
     }
-  }, [activeFile, content, indentSize, persistedContent, setContent, setDirty, setSaveState, setValidation]);
+  }, [
+    activeFile,
+    content,
+    cursor,
+    enqueueRestoreRequest,
+    indentSize,
+    markActiveFileFormatted,
+    persistedContent,
+    setContent,
+    setCursor,
+    setDirty,
+    setSaveState,
+    setValidation,
+  ]);
 
   const handleContentChange = useCallback(
-    (nextContent: string) => {
+    (nextContent: string, source: 'user' | 'programmatic') => {
+      const currentContent = useEditorStore.getState().content;
+      if (nextContent === currentContent) {
+        return;
+      }
+
+      if (source === 'programmatic') {
+        logViewStateDebug('skip-clear-formatted-programmatic-change', {
+          fileId: useEditorStore.getState().activeFileId,
+          nextLength: nextContent.length,
+          currentLength: currentContent.length,
+        });
+        return;
+      }
+
+      const activeId = useEditorStore.getState().activeFileId;
+      const formattedBefore = activeId
+        ? Boolean(useEditorStore.getState().fileViewStates[activeId]?.formatted)
+        : false;
+      logViewStateDebug('user-edit-clear-formatted', {
+        fileId: activeId,
+        formattedBefore,
+        nextLength: nextContent.length,
+        currentLength: currentContent.length,
+      });
+
+      clearActiveFileFormatted();
       setContent(nextContent);
       setDirty(hasSemanticDifference(persistedContent, nextContent));
     },
-    [persistedContent, setContent, setDirty],
+    [clearActiveFileFormatted, persistedContent, setContent, setDirty],
   );
 
   useEffect(() => {
@@ -822,8 +941,7 @@ function App() {
                 modelPath={activeFile ? `inmemory://json/${activeFile.id}` : null}
                 monacoThemeId={activeTheme.monacoThemeId}
                 indentation={indentSize}
-                cursorToRestore={cursorToRestore}
-                scrollToRestore={scrollToRestore}
+                restoreRequest={restoreRequest}
                 onChange={handleContentChange}
                 onValidation={(errorCount, message) => setValidation({ errorCount, message })}
                 onCursorChange={setCursor}
@@ -867,4 +985,73 @@ function clearAppLocalStorage(): void {
   for (const key of keysToRemove) {
     window.localStorage.removeItem(key);
   }
+}
+
+function calculateCursorOffset(content: string, cursor: CursorPosition): number {
+  if (content.length === 0) {
+    return 0;
+  }
+
+  const lines = content.split('\n');
+  const lineIndex = clamp(cursor.line - 1, 0, lines.length - 1);
+  const lineText = lines[lineIndex] ?? '';
+  const column = clamp(cursor.column, 1, lineText.length + 1);
+
+  let offset = 0;
+  for (let index = 0; index < lineIndex; index += 1) {
+    offset += (lines[index]?.length ?? 0) + 1;
+  }
+
+  offset += column - 1;
+  return clamp(offset, 0, content.length);
+}
+
+function calculateCursorFromOffset(content: string, offset: number): CursorPosition {
+  if (content.length === 0) {
+    return { ...DEFAULT_CURSOR };
+  }
+
+  const safeOffset = clamp(offset, 0, content.length);
+  let line = 1;
+  let column = 1;
+
+  for (let index = 0; index < safeOffset; index += 1) {
+    if (content[index] === '\n') {
+      line += 1;
+      column = 1;
+    } else {
+      column += 1;
+    }
+  }
+
+  return { line, column };
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (value < min) {
+    return min;
+  }
+
+  if (value > max) {
+    return max;
+  }
+
+  return value;
+}
+
+function logViewStateDebug(label: string, payload?: unknown): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  if (window.localStorage.getItem('json-editor-debug-view-state') !== '1') {
+    return;
+  }
+
+  if (payload === undefined) {
+    console.log(`[view-state] ${label}`);
+    return;
+  }
+
+  console.log(`[view-state] ${label}`, payload);
 }

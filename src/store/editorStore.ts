@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 
 import { loadFavoriteFileIds, saveFavoriteFileIds } from '../lib/favorites';
+import { pruneFileEditorStates, type FileEditorState } from '../lib/lastOpenState';
 import type {
   CursorPosition,
   DirectoryTreeNode,
@@ -19,6 +20,7 @@ interface DirectoryPayload {
   files: JsonFileRecord[];
   tree: DirectoryTreeNode;
   expandedDirectoryIds: string[];
+  fileViewStates?: Record<string, FileEditorState>;
 }
 
 interface EditorStore {
@@ -33,6 +35,7 @@ interface EditorStore {
   searchQuery: string;
   expandedDirectories: Record<string, boolean>;
   favoriteFileIds: string[];
+  fileViewStates: Record<string, FileEditorState>;
   validation: ValidationState;
   cursor: CursorPosition;
   scroll: ScrollPosition;
@@ -53,6 +56,8 @@ interface EditorStore {
   setValidation: (validation: ValidationState) => void;
   setCursor: (cursor: CursorPosition) => void;
   setScroll: (scroll: ScrollPosition) => void;
+  markActiveFileFormatted: (cursorOffset: number) => void;
+  clearActiveFileFormatted: () => void;
   setThemeId: (themeId: string) => void;
   setIndentSize: (indentSize: JsonIndentSize) => void;
   setAutoSaveOnFocus: (enabled: boolean) => void;
@@ -66,6 +71,8 @@ const THEME_STORAGE_KEY = 'json-editor-theme';
 const AUTO_SAVE_ON_FOCUS_STORAGE_KEY = 'json-editor-auto-save-on-focus';
 const DEFAULT_THEME_ID = readThemeFromStorage();
 const DEFAULT_AUTO_SAVE_ON_FOCUS = readAutoSaveOnFocusFromStorage();
+const DEFAULT_CURSOR: CursorPosition = { line: 1, column: 1 };
+const DEFAULT_SCROLL: ScrollPosition = { top: 0, left: 0 };
 
 export const useEditorStore = create<EditorStore>((set) => ({
   directoryHandle: null,
@@ -79,29 +86,32 @@ export const useEditorStore = create<EditorStore>((set) => ({
   searchQuery: '',
   expandedDirectories: {},
   favoriteFileIds: [],
+  fileViewStates: {},
   validation: {
     errorCount: 0,
     message: '请选择一个 JSON 文件开始编辑',
   },
-  cursor: {
-    line: 1,
-    column: 1,
-  },
-  scroll: {
-    top: 0,
-    left: 0,
-  },
+  cursor: { ...DEFAULT_CURSOR },
+  scroll: { ...DEFAULT_SCROLL },
   themeId: DEFAULT_THEME_ID,
   indentSize: 2,
   autoSaveOnFocus: DEFAULT_AUTO_SAVE_ON_FOCUS,
   isSidebarCollapsed: false,
   saveStatus: 'idle',
   statusMessage: '未保存',
-  setDirectoryData: ({ directoryHandle, directoryName, files, tree, expandedDirectoryIds }) => {
+  setDirectoryData: ({
+    directoryHandle,
+    directoryName,
+    files,
+    tree,
+    expandedDirectoryIds,
+    fileViewStates = {},
+  }) => {
     const expandedDirectories = Object.fromEntries(
       expandedDirectoryIds.map((directoryId) => [directoryId, true]),
     );
     const availableFileIds = new Set(files.map((file) => file.id));
+    const nextFileViewStates = pruneFileEditorStates(fileViewStates, availableFileIds);
     const persistedFavoriteFileIds = loadFavoriteFileIds(directoryName);
     const favoriteFileIds = persistedFavoriteFileIds.filter((fileId) => availableFileIds.has(fileId));
 
@@ -116,6 +126,7 @@ export const useEditorStore = create<EditorStore>((set) => ({
       tree,
       expandedDirectories,
       favoriteFileIds,
+      fileViewStates: nextFileViewStates,
       activeFileId: null,
       content: '',
       persistedContent: '',
@@ -125,38 +136,34 @@ export const useEditorStore = create<EditorStore>((set) => ({
         errorCount: 0,
         message: '请选择一个 JSON 文件开始编辑',
       },
-      cursor: {
-        line: 1,
-        column: 1,
-      },
-      scroll: {
-        top: 0,
-        left: 0,
-      },
+      cursor: { ...DEFAULT_CURSOR },
+      scroll: { ...DEFAULT_SCROLL },
       saveStatus: 'idle',
       statusMessage: '目录已打开',
     });
   },
   setActiveFileContent: (fileId, content) => {
-    set({
-      activeFileId: fileId,
-      content,
-      persistedContent: content,
-      isDirty: false,
-      validation: {
-        errorCount: 0,
-        message: 'JSON 格式正确',
-      },
-      cursor: {
-        line: 1,
-        column: 1,
-      },
-      scroll: {
-        top: 0,
-        left: 0,
-      },
-      saveStatus: 'idle',
-      statusMessage: '文件已加载',
+    set((state) => {
+      const nextFileState = state.fileViewStates[fileId] ?? createDefaultFileEditorState();
+
+      return {
+        activeFileId: fileId,
+        content,
+        persistedContent: content,
+        isDirty: false,
+        validation: {
+          errorCount: 0,
+          message: 'JSON 格式正确',
+        },
+        fileViewStates: {
+          ...state.fileViewStates,
+          [fileId]: nextFileState,
+        },
+        cursor: { ...nextFileState.cursor },
+        scroll: { ...nextFileState.scroll },
+        saveStatus: 'idle',
+        statusMessage: '文件已加载',
+      };
     });
   },
   setContent: (content) => {
@@ -243,10 +250,31 @@ export const useEditorStore = create<EditorStore>((set) => ({
     set({ validation });
   },
   setCursor: (cursor) => {
-    set({ cursor });
+    set((state) => ({
+      cursor,
+      fileViewStates: patchActiveFileViewState(state, { cursor }),
+    }));
   },
   setScroll: (scroll) => {
-    set({ scroll });
+    set((state) => ({
+      scroll,
+      fileViewStates: patchActiveFileViewState(state, { scroll }),
+    }));
+  },
+  markActiveFileFormatted: (cursorOffset) => {
+    set((state) => ({
+      fileViewStates: patchActiveFileViewState(state, {
+        cursorOffset,
+        formatted: true,
+      }),
+    }));
+  },
+  clearActiveFileFormatted: () => {
+    set((state) => ({
+      fileViewStates: patchActiveFileViewState(state, {
+        formatted: false,
+      }),
+    }));
   },
   setThemeId: (themeId) => {
     localStorage.setItem(THEME_STORAGE_KEY, themeId);
@@ -291,4 +319,39 @@ function readAutoSaveOnFocusFromStorage(): boolean {
   }
 
   return window.localStorage.getItem(AUTO_SAVE_ON_FOCUS_STORAGE_KEY) === '1';
+}
+
+function createDefaultFileEditorState(): FileEditorState {
+  return {
+    cursor: { ...DEFAULT_CURSOR },
+    scroll: { ...DEFAULT_SCROLL },
+    cursorOffset: 0,
+    formatted: false,
+  };
+}
+
+function patchActiveFileViewState(
+  state: Pick<EditorStore, 'activeFileId' | 'fileViewStates'>,
+  patch: Partial<FileEditorState>,
+): Record<string, FileEditorState> {
+  const activeFileId = state.activeFileId;
+  if (!activeFileId) {
+    return state.fileViewStates;
+  }
+
+  const currentState = state.fileViewStates[activeFileId] ?? createDefaultFileEditorState();
+  const nextCursor = patch.cursor ? { ...patch.cursor } : { ...currentState.cursor };
+  const nextScroll = patch.scroll ? { ...patch.scroll } : { ...currentState.scroll };
+
+  return {
+    ...state.fileViewStates,
+    [activeFileId]: {
+      cursor: nextCursor,
+      scroll: nextScroll,
+      cursorOffset:
+        typeof patch.cursorOffset === 'number' ? patch.cursorOffset : currentState.cursorOffset,
+      formatted:
+        typeof patch.formatted === 'boolean' ? patch.formatted : currentState.formatted,
+    },
+  };
 }

@@ -1,4 +1,4 @@
-import { applyEdits, modify } from 'jsonc-parser';
+import { applyEdits, format, modify, type Edit } from 'jsonc-parser';
 
 export interface JsonValidationResult {
   valid: boolean;
@@ -27,6 +27,27 @@ export function validateJsonContent(content: string): JsonValidationResult {
 export function formatJson(content: string, indentation: number): string {
   const parsed = JSON.parse(content);
   return JSON.stringify(parsed, null, indentation) + '\n';
+}
+
+export function formatJsonWithCursorOffset(
+  content: string,
+  indentation: number,
+  cursorOffset: number,
+): { formattedContent: string; mappedCursorOffset: number } {
+  JSON.parse(content);
+
+  const edits = format(content, undefined, {
+    insertSpaces: true,
+    tabSize: indentation,
+    eol: '\n',
+    insertFinalNewline: true,
+  });
+  const formattedContent = applyEdits(content, edits);
+
+  return {
+    formattedContent,
+    mappedCursorOffset: mapOffsetThroughEdits(content.length, cursorOffset, edits),
+  };
 }
 
 export function hasSemanticDifference(leftContent: string, rightContent: string): boolean {
@@ -214,4 +235,63 @@ function deepEqual(left: JsonValue, right: JsonValue): boolean {
   }
 
   return false;
+}
+
+function mapOffsetThroughEdits(
+  originalLength: number,
+  offset: number,
+  edits: Edit[],
+): number {
+  if (edits.length === 0) {
+    return clampOffset(offset, 0, originalLength);
+  }
+
+  const sortedEdits = edits.slice().sort((left, right) => {
+    const diff = left.offset - right.offset;
+    if (diff !== 0) {
+      return diff;
+    }
+
+    return left.length - right.length;
+  });
+
+  let mappedOffset = clampOffset(offset, 0, originalLength);
+  for (let index = sortedEdits.length - 1; index >= 0; index -= 1) {
+    const edit = sortedEdits[index];
+    const start = edit.offset;
+    const end = edit.offset + edit.length;
+    const delta = edit.content.length - edit.length;
+
+    if (edit.length === 0) {
+      if (mappedOffset >= start) {
+        mappedOffset += edit.content.length;
+      }
+      continue;
+    }
+
+    if (mappedOffset < start) {
+      continue;
+    }
+
+    if (mappedOffset >= end) {
+      mappedOffset += delta;
+      continue;
+    }
+
+    mappedOffset = start + edit.content.length;
+  }
+
+  return clampOffset(mappedOffset, 0, Number.MAX_SAFE_INTEGER);
+}
+
+function clampOffset(value: number, min: number, max: number): number {
+  if (value < min) {
+    return min;
+  }
+
+  if (value > max) {
+    return max;
+  }
+
+  return value;
 }
