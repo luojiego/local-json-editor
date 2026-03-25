@@ -31,7 +31,15 @@ body,
 
 body {
   margin: 0;
-  font-family: 'Outfit', sans-serif;
+  font-family:
+    'PingFang SC',
+    'Hiragino Sans GB',
+    'Microsoft YaHei',
+    'Noto Sans CJK SC',
+    'Segoe UI',
+    system-ui,
+    -apple-system,
+    sans-serif;
   color: var(--text-main);
   background:
     radial-gradient(circle at 9% 8%, color-mix(in srgb, var(--accent) 11%, transparent) 0, transparent 34%),

@@ -4,9 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "pnpm typecheck && vite build",
-    "preview": "vite preview",
+    "sync:monaco-assets": "node scripts/sync-monaco-assets.mjs",
+    "dev": "pnpm sync:monaco-assets && vite --host",
+    "build": "pnpm sync:monaco-assets && pnpm typecheck && vite build",
+    "preview": "pnpm sync:monaco-assets && vite preview",
     "typecheck": "tsc --noEmit",
     "package:qa-win10": "pnpm build && node scripts/package-qa-win10.mjs"
   },

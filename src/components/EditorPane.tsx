@@ -212,7 +212,8 @@ export function EditorPane({
       options={{
         minimap: { enabled: false },
         automaticLayout: true,
-        fontFamily: 'IBM Plex Mono',
+        fontFamily:
+          "'JetBrains Mono','SFMono-Regular','Cascadia Mono','Roboto Mono','Source Code Pro','Consolas','Menlo','Monaco',monospace",
         fontSize: 14,
         lineNumbersMinChars: 3,
         renderValidationDecorations: 'editable',

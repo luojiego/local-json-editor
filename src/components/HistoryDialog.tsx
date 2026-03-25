@@ -349,7 +349,8 @@ export function HistoryDialog({
                         enabled: false,
                       },
                       scrollBeyondLastLine: false,
-                      fontFamily: 'IBM Plex Mono',
+                      fontFamily:
+                        "'JetBrains Mono','SFMono-Regular','Cascadia Mono','Roboto Mono','Source Code Pro','Consolas','Menlo','Monaco',monospace",
                       fontSize: 13,
                       lineNumbersMinChars: 3,
                       wordWrap: 'on',

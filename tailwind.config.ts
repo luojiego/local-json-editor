@@ -5,8 +5,26 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Outfit', 'sans-serif'],
-        mono: ['IBM Plex Mono', 'monospace'],
+        sans: [
+          'PingFang SC',
+          'Hiragino Sans GB',
+          'Microsoft YaHei',
+          'Noto Sans CJK SC',
+          'Segoe UI',
+          'system-ui',
+          'sans-serif',
+        ],
+        mono: [
+          'JetBrains Mono',
+          'SFMono-Regular',
+          'Cascadia Mono',
+          'Roboto Mono',
+          'Source Code Pro',
+          'Consolas',
+          'Menlo',
+          'Monaco',
+          'monospace',
+        ],
       },
     },
   },
