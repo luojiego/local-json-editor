@@ -6,6 +6,7 @@ interface ToolbarProps {
   fileName: string;
   canSave: boolean;
   canOpenHistory: boolean;
+  isFormatting: boolean;
   saveLabel: string;
   indentSize: 2 | 4;
   themeId: string;
@@ -25,6 +26,7 @@ export function Toolbar({
   fileName,
   canSave,
   canOpenHistory,
+  isFormatting,
   saveLabel,
   indentSize,
   themeId,
@@ -92,12 +94,13 @@ export function Toolbar({
         <div className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-toolbar)_88%,black_12%)] px-1 py-1">
           <button
             type="button"
-            className="inline-flex h-7 items-center gap-1 rounded px-2 text-xs font-semibold text-[var(--text-main)] transition hover:bg-[color-mix(in_srgb,var(--accent)_16%,transparent)]"
+            className="inline-flex h-7 items-center gap-1 rounded px-2 text-xs font-semibold text-[var(--text-main)] transition hover:bg-[color-mix(in_srgb,var(--accent)_16%,transparent)] disabled:cursor-not-allowed disabled:opacity-60"
             onClick={onFormat}
-            title="Ctrl+Shift+F"
+            disabled={!canSave || isFormatting}
+            title={isFormatting ? '格式化处理中' : 'Ctrl+Shift+F'}
           >
             <IndentIncrease size={14} />
-            格式化
+            {isFormatting ? '格式化中...' : '格式化'}
           </button>
         </div>
 

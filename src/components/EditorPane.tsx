@@ -121,40 +121,49 @@ export function EditorPane({
       lastRestoredRequestIdRef.current = restoreRequest.requestId;
       const { cursor, reason, scroll } = restoreRequest;
 
-      if (reason === 'file-switch' && scroll) {
-        editorInstance.setScrollTop(Math.max(0, scroll.top));
-        editorInstance.setScrollLeft(Math.max(0, scroll.left));
-      }
+      editorInstance.layout();
 
-      if (cursor) {
-        const lineNumber = clamp(cursor.line, 1, model.getLineCount());
-        const column = clamp(cursor.column, 1, model.getLineMaxColumn(lineNumber));
-        editorInstance.setPosition({ lineNumber, column });
-        editorInstance.setSelection({
-          startLineNumber: lineNumber,
-          startColumn: column,
-          endLineNumber: lineNumber,
-          endColumn: column,
-        });
-
-        if (reason === 'format' || reason === 'history-jump') {
-          editorInstance.revealPositionInCenter({ lineNumber, column });
-        } else if (!scroll) {
-          editorInstance.revealPositionInCenterIfOutsideViewport({ lineNumber, column });
-        } else {
+      try {
+        if (reason === 'file-switch' && scroll) {
           editorInstance.setScrollTop(Math.max(0, scroll.top));
           editorInstance.setScrollLeft(Math.max(0, scroll.left));
         }
-      } else if (scroll) {
-        editorInstance.setScrollTop(Math.max(0, scroll.top));
-        editorInstance.setScrollLeft(Math.max(0, scroll.left));
+
+        if (cursor) {
+          const lineNumber = clamp(cursor.line, 1, model.getLineCount());
+          const column = clamp(cursor.column, 1, model.getLineMaxColumn(lineNumber));
+          editorInstance.setPosition({ lineNumber, column });
+          editorInstance.setSelection({
+            startLineNumber: lineNumber,
+            startColumn: column,
+            endLineNumber: lineNumber,
+            endColumn: column,
+          });
+
+          if (reason === 'format' || reason === 'history-jump') {
+            editorInstance.revealPositionInCenter({ lineNumber, column });
+          } else if (!scroll) {
+            editorInstance.revealPositionInCenterIfOutsideViewport({ lineNumber, column });
+          } else {
+            editorInstance.setScrollTop(Math.max(0, scroll.top));
+            editorInstance.setScrollLeft(Math.max(0, scroll.left));
+          }
+        } else if (scroll) {
+          editorInstance.setScrollTop(Math.max(0, scroll.top));
+          editorInstance.setScrollLeft(Math.max(0, scroll.left));
+        }
+
+        editorInstance.focus();
+      } catch (error) {
+        console.warn('恢复编辑器视图失败:', error);
       }
 
-      editorInstance.focus();
       onViewStateRestored(restoreRequest.requestId);
     };
 
-    restoreCursorFrameRef.current = requestAnimationFrame(applyRestore);
+    restoreCursorFrameRef.current = requestAnimationFrame(() => {
+      restoreCursorFrameRef.current = requestAnimationFrame(applyRestore);
+    });
 
     return () => {
       if (restoreCursorFrameRef.current !== null) {
@@ -184,7 +193,8 @@ export function EditorPane({
       beforeMount={registerMonacoThemes}
       onMount={handleEditorMount}
       onChange={(content, event) => {
-        const source = event?.isFlush === false ? 'user' : 'programmatic';
+        // `isFlush === true` 才是 setValue 等程序写入；其余情况按用户输入处理
+        const source = event?.isFlush === true ? 'programmatic' : 'user';
         onChange(content ?? '', source);
       }}
       onValidate={(markers) => {
@@ -208,6 +218,9 @@ export function EditorPane({
         renderValidationDecorations: 'editable',
         scrollBeyondLastLine: false,
         tabSize: indentation,
+        // 避免 EditContext + 富屏读 DOM 与模型更新竞态时出现 Range.setStart IndexSizeError
+        editContext: false,
+        renderRichScreenReaderContent: false,
       }}
     />
   );

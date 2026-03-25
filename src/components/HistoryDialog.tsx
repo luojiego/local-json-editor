@@ -354,6 +354,8 @@ export function HistoryDialog({
                       lineNumbersMinChars: 3,
                       wordWrap: 'on',
                       automaticLayout: true,
+                      editContext: false,
+                      renderRichScreenReaderContent: false,
                       hideUnchangedRegions: {
                         enabled: true,
                         contextLineCount: 2,

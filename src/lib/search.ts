@@ -9,6 +9,13 @@ export function searchFiles(files: JsonFileRecord[], rawQuery: string): SearchRe
     return files.map((file) => ({ file, score: 0 }));
   }
 
+  if (shouldPreferDirectMatch(query)) {
+    const directMatches = getDirectMatches(files, query);
+    if (directMatches.length > 0) {
+      return directMatches;
+    }
+  }
+
   const index = files.map((file) => ({
     file,
     initials: buildInitials(file.relativePath),
@@ -36,15 +43,17 @@ export function searchFiles(files: JsonFileRecord[], rawQuery: string): SearchRe
     });
   }
 
-  for (const item of index) {
-    const initialsMatched = isSubsequence(query, item.initials);
-    const pinyinMatched = isSubsequence(query, item.pinyinInitials);
+  if (shouldUseSubsequenceFallback(query)) {
+    for (const item of index) {
+      const initialsMatched = isSubsequence(query, item.initials);
+      const pinyinMatched = isSubsequence(query, item.pinyinInitials);
 
-    if ((initialsMatched || pinyinMatched) && !ranked.has(item.file.id)) {
-      ranked.set(item.file.id, {
-        file: item.file,
-        score: 0.35,
-      });
+      if ((initialsMatched || pinyinMatched) && !ranked.has(item.file.id)) {
+        ranked.set(item.file.id, {
+          file: item.file,
+          score: 0.35,
+        });
+      }
     }
   }
 
@@ -132,4 +141,43 @@ function isSubsequence(query: string, target: string): boolean {
   }
 
   return false;
+}
+
+function shouldUseSubsequenceFallback(query: string): boolean {
+  if (!query || query.length > 8) {
+    return false;
+  }
+
+  return /^[a-z0-9]+$/.test(query);
+}
+
+function shouldPreferDirectMatch(query: string): boolean {
+  return /[./\\]/.test(query);
+}
+
+function getDirectMatches(files: JsonFileRecord[], query: string): SearchResult[] {
+  const matched: SearchResult[] = [];
+
+  for (const file of files) {
+    const lowerName = file.name.toLowerCase();
+    const lowerPath = file.relativePath.toLowerCase();
+    const indexInName = lowerName.indexOf(query);
+    const indexInPath = lowerPath.indexOf(query);
+
+    if (indexInName < 0 && indexInPath < 0) {
+      continue;
+    }
+
+    // 名称命中优先于路径命中，位置越靠前越优先
+    const score = indexInName >= 0 ? indexInName : 100 + indexInPath;
+    matched.push({ file, score });
+  }
+
+  return matched.sort((left, right) => {
+    if (left.score !== right.score) {
+      return left.score - right.score;
+    }
+
+    return left.file.relativePath.localeCompare(right.file.relativePath);
+  });
 }

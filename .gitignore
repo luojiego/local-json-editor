@@ -8,3 +8,4 @@ vite.config.d.ts
 tailwind.config.js
 tailwind.config.d.ts
 doc/
+src-tauri/target/

@@ -53,11 +53,14 @@ import type { HistoryEntry } from './types/history';
 const TABLET_BREAKPOINT = 1200;
 const MOBILE_BREAKPOINT = 768;
 const LOCAL_STORAGE_APP_KEY_PREFIX = 'json-editor-';
+const MAX_FORMATTED_VIEW_CACHE_SIZE = 12;
+const MAX_RAW_CONTENT_CACHE_SIZE = 12;
 const DEFAULT_CURSOR: CursorPosition = { line: 1, column: 1 };
 const DEFAULT_SCROLL: ScrollPosition = { top: 0, left: 0 };
 
 interface FileSystemCapability {
   supported: boolean;
+  isPreferredBrowser: boolean;
   hasDirectoryPicker: boolean;
   isSecureContext: boolean;
   isTopLevelContext: boolean;
@@ -65,6 +68,44 @@ interface FileSystemCapability {
 
 type SaveTrigger = 'manual' | 'auto';
 type SaveAttemptResult = 'saved' | 'skipped' | 'cancelled' | 'failed';
+type JsonIndentation = 2 | 4;
+
+interface FormattedViewCacheEntry {
+  contentSignature: string;
+  indentation: JsonIndentation;
+  formattedContent: string;
+}
+
+function isPreferredDesktopBrowser() {
+  const navigatorWithUAData = navigator as Navigator & {
+    userAgentData?: {
+      brands?: Array<{
+        brand: string;
+      }>;
+    };
+  };
+  const brands = navigatorWithUAData.userAgentData?.brands ?? [];
+  const hasEdgeBrand = brands.some((entry) => /Microsoft Edge/i.test(entry.brand));
+  if (hasEdgeBrand) {
+    return true;
+  }
+
+  const hasChromeBrand = brands.some((entry) => /Google Chrome/i.test(entry.brand));
+  if (hasChromeBrand) {
+    return true;
+  }
+
+  const userAgent = navigator.userAgent;
+  if (/\bEdg\//.test(userAgent)) {
+    return true;
+  }
+
+  const isChromeFamily = /\bChrome\//.test(userAgent) || /\bCriOS\//.test(userAgent);
+  const hasOtherBrowserToken =
+    /\b(OPR|Opera|Firefox|YaBrowser|QQBrowser|Vivaldi|SamsungBrowser)\//.test(userAgent);
+
+  return isChromeFamily && !hasOtherBrowserToken;
+}
 
 function App() {
   const {
@@ -112,6 +153,8 @@ function App() {
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const [restoreRequest, setRestoreRequest] = useState<ViewRestoreRequest | null>(null);
   const [isHistoryDialogOpen, setIsHistoryDialogOpen] = useState(false);
+  const [isFormatting, setIsFormatting] = useState(false);
+  const [isSwitchingFile, setIsSwitchingFile] = useState(false);
   const initialLastOpenStateRef = useRef(loadLastOpenState());
   const [isInitializing, setIsInitializing] = useState(true);
   const [hasRecentDirectory, setHasRecentDirectory] = useState(
@@ -120,12 +163,16 @@ function App() {
   const [recentDirectoryName, setRecentDirectoryName] = useState(
     () => initialLastOpenStateRef.current?.directoryName ?? '',
   );
+  const formattedViewCacheRef = useRef<Map<string, FormattedViewCacheEntry>>(new Map());
+  const rawContentCacheRef = useRef<Map<string, string>>(new Map());
   const restoredLastDirectoryRef = useRef(false);
   const restoreSessionTokenRef = useRef(0);
   const loadDirectoryFromHandleRef = useRef<
     (directoryHandle: FileSystemDirectoryHandle, shouldPersistHandle: boolean, sessionToken?: number) => Promise<void>
   >(async () => {});
   const restoreRequestIdRef = useRef(0);
+  const formatInFlightRef = useRef(false);
+  const switchFileInFlightRef = useRef(false);
   const enqueueRestoreRequest = useCallback(
     (reason: ViewRestoreRequest['reason'], nextCursor: CursorPosition | null, nextScroll: ScrollPosition | null) => {
       restoreRequestIdRef.current += 1;
@@ -182,6 +229,7 @@ function App() {
   const isTabletOrBelow = viewportWidth <= TABLET_BREAKPOINT;
 
   const fileSystemCapability = useMemo<FileSystemCapability>(() => {
+    const isPreferredBrowser = isPreferredDesktopBrowser();
     const hasDirectoryPicker = typeof window.showDirectoryPicker === 'function';
     const isSecure = window.isSecureContext;
 
@@ -193,7 +241,8 @@ function App() {
     }
 
     return {
-      supported: hasDirectoryPicker && isSecure && isTopLevelContext,
+      supported: isPreferredBrowser && hasDirectoryPicker && isSecure && isTopLevelContext,
+      isPreferredBrowser,
       hasDirectoryPicker,
       isSecureContext: isSecure,
       isTopLevelContext,
@@ -255,6 +304,10 @@ function App() {
       return '';
     }
 
+    if (!fileSystemCapability.isPreferredBrowser) {
+      return '当前浏览器不受支持，请使用桌面浏览器（Chrome / Edge）访问。';
+    }
+
     if (!fileSystemCapability.isSecureContext) {
       return '当前页面不是安全上下文，请使用 https 或 http://localhost 访问（不要使用局域网 IP）。';
     }
@@ -269,6 +322,16 @@ function App() {
 
     return '当前环境无法使用 File System Access API。';
   }, [fileSystemCapability]);
+
+  const unsupportedBrowserAlertShownRef = useRef(false);
+  useEffect(() => {
+    if (isMobile || fileSystemCapability.isPreferredBrowser || unsupportedBrowserAlertShownRef.current) {
+      return;
+    }
+
+    unsupportedBrowserAlertShownRef.current = true;
+    window.alert('当前浏览器不受支持，请使用桌面浏览器（Chrome / Edge）访问。');
+  }, [fileSystemCapability.isPreferredBrowser, isMobile]);
 
   useEffect(() => {
     applyThemeVariables(activeTheme);
@@ -336,7 +399,19 @@ function App() {
       }
 
       try {
-        const fileContent = await readFileContent(file.handle);
+        const openFileStartedAt = performance.now();
+        let fileContent: string;
+        let rawSource: 'memory-cache' | 'disk-read';
+        const cachedRawContent = rawContentCacheRef.current.get(file.id);
+        if (cachedRawContent !== undefined) {
+          fileContent = cachedRawContent;
+          rawSource = 'memory-cache';
+        } else {
+          fileContent = await readFileContent(file.handle);
+          setRawContentCache(rawContentCacheRef.current, file.id, fileContent);
+          rawSource = 'disk-read';
+        }
+        const fileContentSignature = createContentSignature(fileContent);
 
         const restoredState = useEditorStore.getState().fileViewStates[file.id] ?? null;
         logViewStateDebug('open-file-restored-state', {
@@ -346,25 +421,77 @@ function App() {
         });
 
         let displayContent = fileContent;
+        let formattedOutcome:
+          | 'not-formatted-mode'
+          | 'formatted-cache-hit'
+          | 'formatted-recomputed'
+          | 'formatted-recompute-failed';
+
+        let formattedMissReason:
+          | 'no-cache-entry'
+          | 'signature-mismatch'
+          | 'indent-mismatch'
+          | undefined;
+
         if (restoredState?.formatted) {
-          try {
-            const { formattedContent } = formatJsonWithCursorOffset(
-              fileContent,
-              indentSize,
-              restoredState.cursorOffset,
-            );
-            displayContent = formattedContent;
-          } catch {
-            // 格式化失败（如文件已损坏），回退到原始内容
+          const cachedView = formattedViewCacheRef.current.get(file.id);
+          const canUseCachedView = Boolean(
+            cachedView &&
+              cachedView.contentSignature === fileContentSignature &&
+              cachedView.indentation === indentSize,
+          );
+
+          if (!cachedView) {
+            formattedMissReason = 'no-cache-entry';
+          } else if (cachedView.indentation !== indentSize) {
+            formattedMissReason = 'indent-mismatch';
+          } else if (cachedView.contentSignature !== fileContentSignature) {
+            formattedMissReason = 'signature-mismatch';
           }
+
+          if (canUseCachedView && cachedView) {
+            displayContent = cachedView.formattedContent;
+            formattedOutcome = 'formatted-cache-hit';
+          } else {
+            try {
+              const { formattedContent } = formatJsonWithCursorOffset(
+                fileContent,
+                indentSize,
+                restoredState.cursorOffset,
+              );
+              displayContent = formattedContent;
+              setFormattedViewCache(formattedViewCacheRef.current, file.id, {
+                contentSignature: fileContentSignature,
+                indentation: indentSize,
+                formattedContent,
+              });
+              formattedOutcome = 'formatted-recomputed';
+            } catch {
+              formattedOutcome = 'formatted-recompute-failed';
+              // 格式化失败（如文件已损坏），回退到原始内容
+            }
+          }
+        } else {
+          formattedOutcome = 'not-formatted-mode';
+          formattedViewCacheRef.current.delete(file.id);
         }
 
-        setActiveFileContent(file.id, displayContent);
+        logFileCacheDebug('open-file', {
+          fileId: file.id,
+          relativePath: file.relativePath,
+          rawSource,
+          formattedOutcome,
+          formattedMissReason,
+          contentSignature: fileContentSignature,
+          indentSize,
+          charLength: fileContent.length,
+          durationMs: Math.round(performance.now() - openFileStartedAt),
+        });
 
-        const validationResult = validateJsonContent(displayContent);
+        setActiveFileContent(file.id, displayContent);
         setValidation({
-          errorCount: validationResult.valid ? 0 : 1,
-          message: validationResult.valid ? 'JSON 格式正确' : validationResult.message,
+          errorCount: 0,
+          message: '正在校验 JSON...',
         });
 
         enqueueRestoreRequest(
@@ -682,6 +809,8 @@ function App() {
 
           await saveFileContent(activeFile.handle, nextPersistedContent);
           markSaved(nextPersistedContent);
+          setRawContentCache(rawContentCacheRef.current, activeFile.id, nextPersistedContent);
+          formattedViewCacheRef.current.delete(activeFile.id);
           persistSaveHistory({
             directoryName,
             fileId: activeFile.id,
@@ -736,21 +865,34 @@ function App() {
 
   const handleSelectFile = useCallback(
     async (file: JsonFileRecord) => {
+      if (activeFileId === file.id || switchFileInFlightRef.current) {
+        return;
+      }
+
+      switchFileInFlightRef.current = true;
+      setIsSwitchingFile(true);
+      await waitForNextPaint();
+
       if (isTabletOrBelow) {
         setSidebarCollapsed(true);
       }
 
-      setRestoreRequest(null);
+      try {
+        setRestoreRequest(null);
 
-      let shouldCheckDirty = true;
-      if (autoSaveOnFocus && isDirty && activeFileId && activeFileId !== file.id) {
-        const saveResult = await performSave('auto');
-        if (saveResult === 'saved') {
-          shouldCheckDirty = false;
+        let shouldCheckDirty = true;
+        if (autoSaveOnFocus && isDirty && activeFileId && activeFileId !== file.id) {
+          const saveResult = await performSave('auto');
+          if (saveResult === 'saved') {
+            shouldCheckDirty = false;
+          }
         }
-      }
 
-      await openFile(file, shouldCheckDirty);
+        await openFile(file, shouldCheckDirty);
+      } finally {
+        switchFileInFlightRef.current = false;
+        setIsSwitchingFile(false);
+      }
     },
     [
       activeFileId,
@@ -799,16 +941,27 @@ function App() {
     await performSave('manual');
   }, [performSave]);
 
-  const handleFormat = useCallback(() => {
-    if (!activeFile) {
+  const handleFormat = useCallback(async () => {
+    if (!activeFile || formatInFlightRef.current || switchFileInFlightRef.current) {
       return;
     }
 
+    formatInFlightRef.current = true;
+    setIsFormatting(true);
+    setSaveState('idle', '正在格式化，请稍候...');
+    await waitForNextPaint();
+
     try {
-      const cursorOffset = calculateCursorOffset(content, cursor);
+      const currentState = useEditorStore.getState();
+      const latestContent = currentState.content;
+      const latestCursor = currentState.cursor;
+      const latestPersistedContent = currentState.persistedContent;
+      const latestIndentSize = currentState.indentSize;
+
+      const cursorOffset = calculateCursorOffset(latestContent, latestCursor);
       const { formattedContent, mappedCursorOffset } = formatJsonWithCursorOffset(
-        content,
-        indentSize,
+        latestContent,
+        latestIndentSize,
         cursorOffset,
       );
       logViewStateDebug('format-apply', {
@@ -819,24 +972,36 @@ function App() {
       const cursorAfterFormat = calculateCursorFromOffset(formattedContent, mappedCursorOffset);
 
       setContent(formattedContent);
-      setDirty(hasSemanticDifference(persistedContent, formattedContent));
+      setDirty(hasSemanticDifference(latestPersistedContent, formattedContent));
       setCursor(cursorAfterFormat);
       markActiveFileFormatted(mappedCursorOffset);
+      const persistedSignature = createContentSignature(latestPersistedContent);
+      setFormattedViewCache(formattedViewCacheRef.current, activeFile.id, {
+        contentSignature: persistedSignature,
+        indentation: latestIndentSize,
+        formattedContent,
+      });
+      logFileCacheDebug('toolbar-format', {
+        fileId: activeFile.id,
+        relativePath: activeFile.relativePath,
+        persistedSignature,
+        indentSize: latestIndentSize,
+        action: 'updated-formatted-cache',
+      });
       enqueueRestoreRequest('format', cursorAfterFormat, null);
       setValidation({ errorCount: 0, message: 'JSON 格式正确' });
       setSaveState('idle', '已格式化');
     } catch (error) {
       const message = error instanceof Error ? error.message : '当前 JSON 无法格式化';
       window.alert(`格式化失败: ${message}`);
+    } finally {
+      formatInFlightRef.current = false;
+      setIsFormatting(false);
     }
   }, [
     activeFile,
-    content,
-    cursor,
     enqueueRestoreRequest,
-    indentSize,
     markActiveFileFormatted,
-    persistedContent,
     setContent,
     setCursor,
     setDirty,
@@ -857,6 +1022,8 @@ function App() {
           nextLength: nextContent.length,
           currentLength: currentContent.length,
         });
+        setContent(nextContent);
+        setDirty(hasSemanticDifference(persistedContent, nextContent));
         return;
       }
 
@@ -871,7 +1038,12 @@ function App() {
         currentLength: currentContent.length,
       });
 
-      clearActiveFileFormatted();
+      if (activeId) {
+        rawContentCacheRef.current.delete(activeId);
+      }
+      if (formattedBefore) {
+        clearActiveFileFormatted();
+      }
       setContent(nextContent);
       setDirty(hasSemanticDifference(persistedContent, nextContent));
     },
@@ -908,6 +1080,11 @@ function App() {
 
   const showWelcomeScreen =
     !isInitializing && !tree && fileSystemCapability.supported;
+  const busyOverlayMessage = isFormatting
+    ? '正在格式化文件，请稍候...'
+    : isSwitchingFile
+      ? '正在切换文件，请稍候...'
+      : '';
 
   if (isMobile) {
     return (
@@ -928,6 +1105,7 @@ function App() {
         fileName={activeFile?.relativePath ?? statusMessage}
         canSave={Boolean(activeFile)}
         canOpenHistory={Boolean(directoryName)}
+        isFormatting={isFormatting}
         saveLabel={saveLabel}
         indentSize={indentSize}
         themeId={themeId}
@@ -1057,6 +1235,14 @@ function App() {
               />
             )}
           </div>
+          {busyOverlayMessage && (
+            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-black/20 backdrop-blur-[1px]">
+              <div className="inline-flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--bg-toolbar)] px-5 py-3 text-sm font-medium text-[var(--text-main)] shadow-[var(--shadow)]">
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-[var(--accent)] border-t-transparent" />
+                {busyOverlayMessage}
+              </div>
+            </div>
+          )}
           <StatusBar validation={validation} cursor={cursor} saveText={saveLabel} isDirty={isDirty} />
         </main>
       </div>
@@ -1082,6 +1268,49 @@ function createContentSignature(content: string): string {
   }
 
   return `${content.length}:${hash}`;
+}
+
+function waitForNextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve());
+    });
+  });
+}
+
+function setFormattedViewCache(
+  cache: Map<string, FormattedViewCacheEntry>,
+  fileId: string,
+  entry: FormattedViewCacheEntry,
+): void {
+  if (cache.has(fileId)) {
+    cache.delete(fileId);
+  }
+
+  cache.set(fileId, entry);
+
+  while (cache.size > MAX_FORMATTED_VIEW_CACHE_SIZE) {
+    const oldestFileId = cache.keys().next().value as string | undefined;
+    if (!oldestFileId) {
+      break;
+    }
+
+    cache.delete(oldestFileId);
+  }
+}
+
+function setRawContentCache(cache: Map<string, string>, fileId: string, content: string): void {
+  cache.delete(fileId);
+  cache.set(fileId, content);
+
+  while (cache.size > MAX_RAW_CONTENT_CACHE_SIZE) {
+    const oldestFileId = cache.keys().next().value as string | undefined;
+    if (!oldestFileId) {
+      break;
+    }
+
+    cache.delete(oldestFileId);
+  }
 }
 
 function clearAppLocalStorage(): void {
@@ -1169,4 +1398,22 @@ function logViewStateDebug(label: string, payload?: unknown): void {
   }
 
   console.log(`[view-state] ${label}`, payload);
+}
+
+/** 在控制台确认 raw / 格式化缓存是否命中：localStorage.setItem('json-editor-debug-file-cache','1') 后刷新 */
+function logFileCacheDebug(label: string, payload?: unknown): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  if (window.localStorage.getItem('json-editor-debug-file-cache') !== '1') {
+    return;
+  }
+
+  if (payload === undefined) {
+    console.log(`[file-cache] ${label}`);
+    return;
+  }
+
+  console.log(`[file-cache] ${label}`, payload);
 }
