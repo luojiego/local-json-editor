@@ -1,11 +1,13 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+import { cloudflare } from "@cloudflare/vite-plugin";
+
 const base = resolveBasePath(process.env.VITE_BASE);
 const allowedHosts = resolveAllowedHosts(process.env.VITE_ALLOWED_HOSTS);
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), cloudflare()],
   base,
   build: {
     rollupOptions: {

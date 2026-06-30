@@ -10,3 +10,10 @@ tailwind.config.js
 tailwind.config.d.ts
 doc/
 src-tauri/target/
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
